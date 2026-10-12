@@ -155,6 +155,16 @@ export interface JobCard {
   photoDataUrl?: string;
   technicianWorkflowStatus?: TechnicianWorkflowStatus;
   assignedAt?: string;
+  onTheWayAt?: string;
+  arrivedAt?: string;
+  repairStartedAt?: string;
+  repairCompletedAt?: string;
+  assignedTechnicianName?: string;
+  assignedTechnicianNameHi?: string;
+  assignedTechnicianPhoto?: string;
+  assignedTechnicianRating?: number;
+  assignedTechnicianDistance?: string;
+  assignedTechnicianBadge?: TechnicianVerificationBadge;
   routeUrl?: string;
   approxDistanceText?: string;
   // ─── P2O Step 2: Transparent Pricing ────────────────────────────────────
@@ -451,6 +461,17 @@ export interface RepairRequest {
   technicianMessageToFarmer?: string;
   rejectionReason?: string;
   isSimulatedDemo?: boolean;
+  // ─── Simulated Technician Tracking & Display Flow ─────────────────────────
+  onTheWayAt?: string;
+  arrivedAt?: string;
+  repairStartedAt?: string;
+  repairCompletedAt?: string;
+  assignedTechnicianName?: string;
+  assignedTechnicianNameHi?: string;
+  assignedTechnicianPhoto?: string;
+  assignedTechnicianRating?: number;
+  assignedTechnicianDistance?: string;
+  assignedTechnicianBadge?: string;
 }
 
 // ─── P2O Step 2: Transparent Pricing Interfaces ─────────────────────────────

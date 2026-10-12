@@ -24,10 +24,20 @@ export interface DemoFarmer {
 
 export const DEMO_FARMERS: DemoFarmer[] = [
   {
+    id: "farmer-ramesh-patil",
+    name: "Ramesh Patil",
+    nameHi: "रमेश पाटिल",
+    phone: "9876543210",
+    villageHi: "शाहपुर",
+    districtHi: "लखनऊ, उत्तर प्रदेश",
+    primaryCropHi: "गेहूं और धान",
+    machineIds: ["water_pump", "tractor"],
+  },
+  {
     id: "farmer-001",
     name: "Ramlal Yadav",
     nameHi: "रामलाल यादव",
-    phone: "9876543210",
+    phone: "9876543211",
     villageHi: "बस्तीखेड़ा",
     districtHi: "लखनऊ, उत्तर प्रदेश",
     primaryCropHi: "गेहूं और सरसों",

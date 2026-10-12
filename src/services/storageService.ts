@@ -1,6 +1,7 @@
 import {
   Machine,
   RepairRequest,
+  RepairStatus,
   UrgencyType,
   InputMethod,
   OutboxAction,
@@ -122,7 +123,75 @@ export const initialMachines: Machine[] = [
   },
 ];
 
+export function broadcastRepairUpdate(repair: RepairRequest): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent("agripulse:repair_updated", { detail: repair }));
+  } catch {}
+  try {
+    const bc = new BroadcastChannel("agripulse_channel");
+    bc.postMessage({ type: "REPAIR_UPDATED", payload: repair });
+    bc.close();
+  } catch {}
+}
+
+export const DEMO_WATERPUMP_REPAIR: RepairRequest = {
+  id: "rep-demo-waterpump-patil",
+  farmerId: "farmer-ramesh-patil",
+  farmerName: "Ramesh Patil",
+  farmerPhone: "9876543210",
+  machineId: "water_pump",
+  machineNameHi: "Water Pump (वाटर पंप)",
+  machineIcon: "💧",
+  problemDescription: "Pump is running but water is not coming (पंप चल रहा है लेकिन पानी नहीं आ रहा है)",
+  inputMethod: "voice",
+  urgency: "today",
+  status: "technician_assigned",
+  statusTextHi: "मैकेनिक नियुक्त हुआ",
+  technicianWorkflowStatus: "assigned",
+  technicianId: "tech-005",
+  assignedTechnicianName: "Mahesh Verma",
+  assignedTechnicianNameHi: "महेश वर्मा",
+  assignedTechnicianPhoto: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='50' fill='%2315803d'/><circle cx='50' cy='38' r='18' fill='%23fed7aa'/><path d='M20 86 c0 -18 14 -28 30 -28 s30 10 30 28 Z' fill='%23fed7aa'/><path d='M35 28 h30 v-6 c0 -4 -6 -8 -15 -8 s-15 4 -15 8 Z' fill='%230f172a'/><circle cx='43' cy='36' r='2.5' fill='%230f172a'/><circle cx='57' cy='36' r='2.5' fill='%230f172a'/><path d='M44 45 q6 5 12 0' stroke='%230f172a' stroke-width='2' fill='none'/></svg>",
+  assignedTechnicianRating: 4.7,
+  assignedTechnicianDistance: "3.2 किमी दूर",
+  assignedTechnicianBadge: "verified",
+  assignedAt: new Date(Date.now() - 1800000).toISOString(),
+  createdAt: new Date(Date.now() - 3600000).toISOString(),
+  verificationStatus: "pending",
+  syncStatus: "synced",
+  approxDistanceText: "3.2 किमी दूर",
+  routeUrl: "https://www.google.com/maps/dir/?api=1&destination=26.7991,80.8986",
+  farmerLocation: {
+    latitude: 26.7991,
+    longitude: 80.8986,
+    village: "शाहपुर",
+    district: "लखनऊ, उत्तर प्रदेश",
+  },
+  diagnosis: {
+    id: "diag-waterpump-prime-01",
+    possibleProblem: "प्राइमिंग फेलियर (Air Lock) या वाटर सील/इंपेलर लीकेज",
+    confidence: "92% (उच्च)",
+    confidenceValue: 92,
+    reasons: [
+      "पंप मोटर घूम रही है मगर सक्शन पाइप में एयर लॉक होने से वैक्यूम नहीं बन रहा।",
+      "सक्शन फुट वाल्व जाम हो सकता है या मैकेनिकल सील से हवा खींच रहा है।"
+    ],
+    safeAction: "पंप को तुरंत बंद करें। बिना पानी के मोटर ज्यादा देर न चलाएं।",
+    urgencyLevel: "high",
+    urgencyText: "जरूरी",
+    urgencyColor: "bg-amber-100 text-amber-800 border-amber-300",
+    disclaimer: "AI की संभावित जांच • भौतिक निरीक्षण आवश्यक है",
+    matchedRule: "waterpump_dry_run_diagnosis",
+    timestamp: new Date(Date.now() - 3600000).toISOString(),
+    whenToCallMechanic: "सक्शन लाइन चेक करने व प्राइमिंग दुरुस्त करने हेतु प्रमाणित मैकेनिक से संपर्क करें।",
+  },
+  recommendedParts: ["Mechanical Water Seal", "Foot Valve Washer", "Priming Plug"],
+};
+
 export const initialRepairs: RepairRequest[] = [
+  // Primary Demo: Ramesh Patil (Water Pump — Pump running but water not coming)
+  DEMO_WATERPUMP_REPAIR,
   // Request A: Tractor — Engine not starting (High Urgency)
   {
     id: "rep-pawan-tractor-01",
@@ -737,11 +806,14 @@ export function createRepairRequest(params: {
  */
 export function updateRepairStatus(
   repairId: string,
-  updates: Partial<RepairRequest>
+  updates: Partial<RepairRequest> | RepairStatus
 ): RepairRequest | null {
+  const patch: Partial<RepairRequest> =
+    typeof updates === "string" ? { status: updates } : updates;
+
   const memIdx = inMemoryRepairs.findIndex((r) => r.id === repairId);
   if (memIdx !== -1) {
-    inMemoryRepairs[memIdx] = { ...inMemoryRepairs[memIdx], ...updates };
+    inMemoryRepairs[memIdx] = { ...inMemoryRepairs[memIdx], ...patch };
   }
 
   if (!isStorageAvailable()) {
@@ -753,7 +825,7 @@ export function updateRepairStatus(
     if (idx === -1) {
       return memIdx !== -1 ? inMemoryRepairs[memIdx] : null;
     }
-    const updated = { ...repairs[idx], ...updates };
+    const updated = { ...repairs[idx], ...patch };
     repairs[idx] = updated;
     localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(repairs));
     if (memIdx !== -1) {
@@ -765,8 +837,10 @@ export function updateRepairStatus(
       entityType: "repair_request",
       entityId: repairId,
       operationType: "update",
-      payload: { ...updates, updatedAt: new Date().toISOString() },
+      payload: { ...patch, updatedAt: new Date().toISOString() },
     });
+
+    broadcastRepairUpdate(updated);
 
     return updated;
   } catch {
@@ -800,13 +874,14 @@ export function recordRepairVerification(
   note?: string,
   verificationIdParam?: string
 ): RepairRequest | null {
-  if (!isStorageAvailable()) return null;
   try {
     const repairs = getRepairRequests();
     const idx = repairs.findIndex((r) => r.id === repairId);
-    if (idx === -1) return null;
+    const memIdx = inMemoryRepairs.findIndex((r) => r.id === repairId);
 
-    const repair = repairs[idx];
+    const repair = idx !== -1 ? repairs[idx] : (memIdx !== -1 ? inMemoryRepairs[memIdx] : null);
+    if (!repair) return null;
+
     const verificationId =
       verificationIdParam ||
       passportData?.verificationId ||
@@ -828,8 +903,20 @@ export function recordRepairVerification(
       verificationNote: note,
       passportData: finalizedPassportData,
     };
-    repairs[idx] = updated;
-    localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(repairs));
+
+    if (memIdx !== -1) {
+      inMemoryRepairs[memIdx] = updated;
+    }
+
+    if (!isStorageAvailable()) {
+      broadcastRepairUpdate(updated);
+      return updated;
+    }
+
+    if (idx !== -1) {
+      repairs[idx] = updated;
+      localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(repairs));
+    }
 
     // P2J Step 1: Enqueue repair verification operation
     enqueueSyncOperation({
@@ -868,6 +955,7 @@ export function recordRepairVerification(
       saveMachines(updatedMachines);
     }
 
+    broadcastRepairUpdate(updated);
     return updated;
   } catch {
     return null;
@@ -897,6 +985,7 @@ export function reopenRepairForReRepair(repairId: string): RepairRequest | null 
     };
     repairs[idx] = updated;
     localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(repairs));
+    broadcastRepairUpdate(updated);
     return updated;
   } catch {
     return null;
@@ -912,10 +1001,11 @@ export function resetDemoData(): void {
   try {
     const normalizedInit = initialMachines.map((m) => normalizeMachineMaintenance(m));
     localStorage.setItem(MACHINES_STORAGE_KEY, JSON.stringify(normalizedInit));
-    localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify([]));
+    localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(initialRepairs));
     localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify([]));
     localStorage.removeItem("agripulse_sync_queue_v1");
     localStorage.removeItem("agripulse_job_cards_v1");
+    broadcastRepairUpdate(DEMO_WATERPUMP_REPAIR);
   } catch {
     // Fail silently
   }
@@ -923,10 +1013,70 @@ export function resetDemoData(): void {
 
 /**
  * Retrieve or create the primary realistic repair request for technician presentation.
- * Farmer: Pawan Gupta | Machine: Mahindra Tractor | Problem: Tractor start नहीं हो रहा
+ * Farmer: Ramesh Patil | Machine: Water Pump | Problem: Pump is running but water is not coming
+ * Technician: Mahesh Verma
  */
 export function createSimulatedDemoRepair(): RepairRequest {
-  return initialRepairs[0];
+  return {
+    id: "rep-pawan-tractor-01",
+    farmerId: "farmer-001",
+    farmerName: "Pawan Gupta",
+    farmerPhone: "9876543210",
+    machineId: "tractor",
+    machineNameHi: "Tractor (महिंद्रा ट्रैक्टर)",
+    machineIcon: "🚜",
+    problemDescription: "Tractor start नहीं हो रहा",
+    inputMethod: "voice",
+    urgency: "today",
+    status: "finding_mechanic",
+    statusTextHi: "मैकेनिक खोज रहे हैं",
+    createdAt: new Date().toISOString(),
+    verificationStatus: "pending",
+    syncStatus: "synced",
+    approxDistanceText: "4.8 किमी दूर",
+    routeUrl: "https://www.google.com/maps/dir/?api=1&destination=26.8467,80.9462",
+    farmerLocation: {
+      latitude: 26.8467,
+      longitude: 80.9462,
+      village: "शाहपुर",
+      district: "लखनऊ, उत्तर प्रदेश",
+    },
+    diagnosis: {
+      id: "diag-tractor-starter-01",
+      possibleProblem: "Starting system में समस्या हो सकती है.",
+      confidence: "89% (उच्च)",
+      confidenceValue: 89,
+      reasons: ["सेल्फ स्टार्टर मोटर या सोलनॉइड स्विच में खराबी हो सकती है।"],
+      safeAction: "मशीन बंद रखें",
+      urgencyLevel: "high",
+      urgencyText: "जरूरी",
+      urgencyColor: "bg-amber-100 text-amber-800",
+      disclaimer: "AI जांच",
+      matchedRule: "starter_system",
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * Explicitly seed or reset the Ramesh Patil Water Pump Demo Repair.
+ */
+export function seedRameshPatilDemoRepair(): RepairRequest {
+  if (isStorageAvailable()) {
+    try {
+      const repairs = getRepairRequests();
+      const existingIdx = repairs.findIndex((r) => r.id === DEMO_WATERPUMP_REPAIR.id);
+      if (existingIdx >= 0) {
+        repairs[existingIdx] = { ...DEMO_WATERPUMP_REPAIR };
+      } else {
+        repairs.unshift({ ...DEMO_WATERPUMP_REPAIR });
+      }
+      localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(repairs));
+      broadcastRepairUpdate(DEMO_WATERPUMP_REPAIR);
+      return repairs[0];
+    } catch {}
+  }
+  return DEMO_WATERPUMP_REPAIR;
 }
 
 /**
@@ -934,18 +1084,22 @@ export function createSimulatedDemoRepair(): RepairRequest {
  */
 export function ensureSimulatedDemoRequest(): RepairRequest {
   const repairs = getRepairRequests();
-  if (repairs.length > 0) {
-    return repairs[0];
+  const demoFound = repairs.find((r) => r.id === DEMO_WATERPUMP_REPAIR.id);
+  if (demoFound) {
+    return demoFound;
   }
 
   if (isStorageAvailable()) {
     try {
-      localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(initialRepairs));
+      const updated = [DEMO_WATERPUMP_REPAIR, ...repairs];
+      localStorage.setItem(REPAIRS_STORAGE_KEY, JSON.stringify(updated));
+      broadcastRepairUpdate(DEMO_WATERPUMP_REPAIR);
+      return DEMO_WATERPUMP_REPAIR;
     } catch {
       // safe fallback
     }
   }
-  return initialRepairs[0];
+  return DEMO_WATERPUMP_REPAIR;
 }
 
 

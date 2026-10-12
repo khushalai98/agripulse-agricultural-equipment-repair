@@ -34,6 +34,7 @@ export interface TechnicianProfileScreenProps {
   onAddSkill?: (skill: string) => void;
   currentLanguage: LanguageCode;
   onLogout: () => void;
+  onBack?: () => void;
 }
 
 export default function TechnicianProfileScreen({
@@ -46,6 +47,7 @@ export default function TechnicianProfileScreen({
   onAddSkill,
   currentLanguage,
   onLogout,
+  onBack,
 }: TechnicianProfileScreenProps) {
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
   const [activeModal, setActiveModal] = useState<
@@ -91,7 +93,7 @@ export default function TechnicianProfileScreen({
           <button
             type="button"
             id="technician-profile-back-btn"
-            onClick={() => onNavigateTab("home")}
+            onClick={() => (onBack ? onBack() : onNavigateTab("home"))}
             className="flex items-center gap-2 p-1.5 -ml-1.5 text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
             aria-label={isEn ? "Back to Dashboard" : "डैशबोर्ड पर वापस"}
           >

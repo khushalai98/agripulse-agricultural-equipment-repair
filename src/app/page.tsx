@@ -81,6 +81,7 @@ import {
   initialMachines,
   initialRepairs,
   resetDemoData,
+  seedRameshPatilDemoRepair,
 } from "@/services/storageService";
 import {
   formatServiceDateHi,
@@ -825,6 +826,36 @@ export default function AgriPulseApp() {
       window.addEventListener("online", handleOnline);
       window.addEventListener("offline", handleOffline);
 
+      // Hackathon live demo reactive listeners: storage, custom event & broadcast channel
+      const handleStorageUpdate = (e: StorageEvent) => {
+        if (!e.key || e.key.includes("agripulse_repairs") || e.key.includes("agripulse_job_cards") || e.key.includes("agripulse_machines")) {
+          refreshData();
+        }
+      };
+      window.addEventListener("storage", handleStorageUpdate);
+
+      const handleCustomRepairUpdate = () => {
+        refreshData();
+      };
+      window.addEventListener("agripulse:repair_updated", handleCustomRepairUpdate);
+
+      let broadcastChan: BroadcastChannel | null = null;
+      try {
+        if (typeof BroadcastChannel !== "undefined") {
+          broadcastChan = new BroadcastChannel("agripulse_channel");
+          broadcastChan.onmessage = () => {
+            refreshData();
+          };
+        }
+      } catch {
+        // BroadcastChannel fallback
+      }
+
+      // Fast sync interval so the farmer never needs to manually refresh during technician status changes
+      const liveSyncTimer = setInterval(() => {
+        refreshData();
+      }, 1500);
+
       // Load initial local data
       refreshData();
 
@@ -855,6 +886,14 @@ export default function AgriPulseApp() {
       return () => {
         window.removeEventListener("online", handleOnline);
         window.removeEventListener("offline", handleOffline);
+        window.removeEventListener("storage", handleStorageUpdate);
+        window.removeEventListener("agripulse:repair_updated", handleCustomRepairUpdate);
+        if (broadcastChan) {
+          try {
+            broadcastChan.close();
+          } catch {}
+        }
+        clearInterval(liveSyncTimer);
         clearInterval(retryTimer);
         cleanupSyncManager();
       };
@@ -2615,6 +2654,11 @@ export default function AgriPulseApp() {
           ) {
             stopSahayakVoice();
             setSahayakStep("init");
+          } else if (
+            currentScreen === "job_ready_verification" ||
+            currentScreen === "repair_verification"
+          ) {
+            setCurrentScreen("repair");
           } else {
             setCurrentScreen("home");
           }
@@ -6630,6 +6674,97 @@ export default function AgriPulseApp() {
               </span>
             </div>
 
+            {/* Presenter Hackathon Simulation Quick-Control Bar */}
+            {latestRepair && (
+              <div className="bg-amber-50/90 border-2 border-amber-300 rounded-xl p-3 space-y-2 text-xs shadow-xs">
+                <div className="flex items-center justify-between text-[11px] font-bold text-amber-900">
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-sm">⚡</span>
+                    <span>हैकथॉन डेमो सिमुलेशन: रमेश पाटिल (वाटर पंप)</span>
+                  </span>
+                  <span className="bg-amber-200 text-amber-950 text-[10px] font-extrabold px-2 py-0.5 rounded-full border border-amber-300">
+                    1-क्लिक स्टेज बदलाव
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateRepairStatus(latestRepair.id, "on_the_way");
+                      refreshData();
+                    }}
+                    className={`py-1.5 px-1 rounded-lg text-[10px] sm:text-[11px] font-extrabold border transition-colors ${
+                      latestRepair.status === "on_the_way" || latestRepair.status === "mechanic_accepted"
+                        ? "bg-amber-600 text-white border-amber-700 shadow-xs"
+                        : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    1. रास्ते में 🛵
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateRepairStatus(latestRepair.id, "arrived");
+                      refreshData();
+                    }}
+                    className={`py-1.5 px-1 rounded-lg text-[10px] sm:text-[11px] font-extrabold border transition-colors ${
+                      latestRepair.status === "arrived"
+                        ? "bg-amber-600 text-white border-amber-700 shadow-xs"
+                        : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    2. पहुँच गया 📍
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateRepairStatus(latestRepair.id, "repair_in_progress");
+                      refreshData();
+                    }}
+                    className={`py-1.5 px-1 rounded-lg text-[10px] sm:text-[11px] font-extrabold border transition-colors ${
+                      latestRepair.status === "repair_in_progress"
+                        ? "bg-blue-600 text-white border-blue-700 shadow-xs"
+                        : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    3. मरम्मत शुरू 🔧
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateRepairStatus(latestRepair.id, "verification_pending");
+                      refreshData();
+                    }}
+                    className={`py-1.5 px-1 rounded-lg text-[10px] sm:text-[11px] font-extrabold border transition-colors ${
+                      latestRepair.status === "verification_pending"
+                        ? "bg-emerald-600 text-white border-emerald-700 shadow-xs"
+                        : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    4. मरम्मत पूरी ⚙️
+                  </button>
+                </div>
+                <div className="flex items-center justify-between pt-1 border-t border-amber-200 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      seedRameshPatilDemoRepair();
+                      refreshData();
+                      setFeedbackMessage("💧 रमेश पाटिल (वाटर पंप) डेमो रीसेट सफल!");
+                      setTimeout(() => setFeedbackMessage(null), 3000);
+                    }}
+                    className="text-amber-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>🔄</span>
+                    <span>डेमो रीसेट करें (वाटर पंप)</span>
+                  </button>
+                  <span className="text-slate-600 font-medium">
+                    वर्तमान स्थिति: <b className="text-slate-900 font-bold">{latestRepair.status}</b>
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* EMPTY STATE */}
             {!latestRepair ? (
               <div className="bg-white border border-slate-200 rounded-lg p-6 text-center space-y-3 shadow-2xs">
@@ -6640,12 +6775,27 @@ export default function AgriPulseApp() {
                 <p className="text-xs text-slate-600">
                   {currentLanguage === "en" ? "All your machines are in working condition." : "आपकी सभी मशीनें चालू स्थिति में हैं।"}
                 </p>
-                <button
-                  onClick={() => handleStartBreakdown()}
-                  className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-sm transition-colors cursor-pointer shadow-2xs"
-                >
-                  {currentLanguage === "en" ? "Machine broken? Call mechanic" : "मशीन खराब है? मैकेनिक बुलाएं"}
-                </button>
+                <div className="space-y-2 pt-2">
+                  <button
+                    onClick={() => handleStartBreakdown()}
+                    className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-sm transition-colors cursor-pointer shadow-2xs"
+                  >
+                    {currentLanguage === "en" ? "Machine broken? Call mechanic" : "मशीन खराब है? मैकेनिक बुलाएं"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      seedRameshPatilDemoRepair();
+                      refreshData();
+                      setFeedbackMessage("💧 रमेश पाटिल (वाटर पंप) डेमो लोड किया गया");
+                      setTimeout(() => setFeedbackMessage(null), 3000);
+                    }}
+                    className="w-full bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold py-2 px-3 rounded-md text-xs border border-amber-300 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <span>⚡</span>
+                    <span>हैकथॉन डेमो लोड करें: रमेश पाटिल (वाटर पंप)</span>
+                  </button>
+                </div>
               </div>
             ) : (
               /* DYNAMIC REPAIR CARD */
@@ -6850,258 +7000,315 @@ export default function AgriPulseApp() {
                 {/* Assigned Technician Preview */}
                 {(() => {
                   const jobCard = getJobCardByRepairId(latestRepair.id);
-                  if (!jobCard) return null;
-                  const assignedTech = getTechnicianById(jobCard.technicianId);
-                  const vStatus = assignedTech?.verificationStatus || jobCard.technicianVerificationStatus || "verified";
+                  const assignedTech = (latestRepair.technicianId ? getTechnicianById(latestRepair.technicianId) : null)
+                    || (jobCard?.technicianId ? getTechnicianById(jobCard.technicianId) : null)
+                    || getTechnicianById("tech-005");
+                  
+                  const techName = latestRepair.assignedTechnicianNameHi || jobCard?.technicianNameHi || assignedTech?.nameHi || "महेश वर्मा";
+                  const techNameEn = latestRepair.assignedTechnicianName || assignedTech?.name || "Mahesh Verma";
+                  const techAvatar = latestRepair.assignedTechnicianPhoto || assignedTech?.avatarUrl;
+                  const techRating = latestRepair.assignedTechnicianRating || assignedTech?.rating || 4.7;
+                  const techDistance = latestRepair.assignedTechnicianDistance || "3.2 किमी दूर (सिम्युलेटेड)";
+                  const vBadge = latestRepair.assignedTechnicianBadge || (currentLanguage === "en" ? "✓ Verified Mechanic" : "✓ प्रमाणित मैकेनिक");
+                  const techSkills = assignedTech ? assignedTech.skills.join(", ") : (currentLanguage === "en" ? "Water Pump & Tractor Expert" : "वाटर पंप व ट्रैक्टर विशेषज्ञ");
+
+                  // Visible if assigned or in active tracking flow
+                  const isAssigned = latestRepair.status !== "reported";
+                  if (!isAssigned) return null;
 
                   return (
-                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2 text-xs">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-base">👨‍🔧</span>
-                          <div>
-                            <div className="font-bold text-slate-900">
-                              {currentLanguage === "en" ? (assignedTech?.name || jobCard.technicianNameHi) : jobCard.technicianNameHi}
-                            </div>
-                            <div className="text-[11px] text-slate-500 font-medium">
-                              {currentLanguage === "en" ? (assignedTech?.skills[0] || "Tractor Expert") : jobCard.technicianSkillHi} • {assignedTech?.experienceYears || jobCard.technicianExperienceYears || 3} {currentLanguage === "en" ? "years exp" : "वर्ष अनुभव"}
-                            </div>
-                          </div>
-                        </div>
-                        <span
-                          className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${
-                            vStatus === "verified"
-                              ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                              : vStatus === "expired"
-                              ? "bg-red-50 text-red-800 border-red-200"
-                              : "bg-amber-50 text-amber-800 border-amber-200"
-                          }`}
-                        >
-                          {vStatus === "verified"
-                            ? (currentLanguage === "en" ? "Verified" : "प्रमाणित")
-                            : vStatus === "expired"
-                            ? (currentLanguage === "en" ? "Expired" : "समाप्त")
-                            : (currentLanguage === "en" ? "Pending" : "प्रक्रियाधीन")}
+                    <div className="bg-gradient-to-br from-emerald-50/80 via-white to-slate-50 border-2 border-emerald-200 rounded-2xl p-4 space-y-3 shadow-xs">
+                      <div className="flex items-center justify-between border-b border-emerald-100 pb-2.5">
+                        <span className="text-[11px] font-extrabold text-emerald-900 uppercase tracking-wider flex items-center gap-1.5">
+                          <span className="text-sm">👨‍🔧</span>
+                          <span>{currentLanguage === "en" ? "Assigned Technician" : "नियुक्त मैकेनिक"}</span>
+                        </span>
+                        <span className="bg-emerald-100 text-emerald-900 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 shadow-2xs">
+                          <span>✓</span>
+                          <span>{vBadge}</span>
                         </span>
                       </div>
+
+                      <div className="flex items-center gap-3.5">
+                        <div className="relative shrink-0">
+                          {techAvatar ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={techAvatar}
+                              alt={techName}
+                              className="w-16 h-16 rounded-full border-2 border-emerald-600 object-cover shadow-sm bg-white"
+                            />
+                          ) : (
+                            <div className="w-16 h-16 rounded-full bg-emerald-700 text-white flex items-center justify-center text-3xl font-bold shadow-sm">
+                              👨‍🔧
+                            </div>
+                          )}
+                          <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px] font-black border-2 border-white shadow-xs">
+                            ✓
+                          </span>
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-1">
+                            <h4 className="font-black text-slate-900 text-base leading-tight truncate">
+                              {currentLanguage === "en" ? techNameEn : techName}
+                            </h4>
+                            <div className="flex items-center gap-1 text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md text-xs font-black border border-amber-200 shrink-0">
+                              <span>⭐</span>
+                              <span>{techRating}</span>
+                            </div>
+                          </div>
+
+                          <div className="text-xs text-slate-600 font-semibold truncate mt-0.5">
+                            {techSkills}
+                          </div>
+
+                          <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-700">
+                            <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-100/70 px-2 py-0.5 rounded-md border border-emerald-200">
+                              <span>📍</span>
+                              <span>{techDistance}</span>
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-medium">
+                              (सिम्युलेटेड)
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
                       {assignedTech && (
                         <button
                           type="button"
                           onClick={() => handleOpenCredentialsModal(assignedTech)}
-                          className="w-full bg-white hover:bg-slate-100 text-slate-700 font-medium py-1 px-2 rounded border border-slate-200 text-[11px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                          className="w-full bg-white hover:bg-slate-50 text-slate-700 font-bold py-2 px-3 rounded-xl border border-slate-300 text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
                         >
-                          <Award className="w-3 h-3 text-amber-600" />
-                          <span>{currentLanguage === "en" ? "View Mechanic Certifications" : "मैकेनिक का प्रमाणन व प्रशिक्षण देखें"}</span>
+                          <Award className="w-3.5 h-3.5 text-amber-600" />
+                          <span>{currentLanguage === "en" ? "View Mechanic Certifications & Training" : "मैकेनिक का प्रमाणन व प्रशिक्षण देखें"}</span>
                         </button>
                       )}
                     </div>
                   );
                 })()}
 
-                {/* Progress Timeline */}
-                <div className="p-3.5 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs">
-                  <div className="font-bold text-slate-700 mb-1">
-                    {currentLanguage === "en" ? "Progress Status:" : "प्रगति की स्थिति:"}
-                  </div>
+                {/* 6-STAGE PROGRESS TIMELINE */}
+                {(() => {
+                  const formatTs = (ts?: string) => {
+                    if (!ts) return null;
+                    try {
+                      const d = new Date(ts);
+                      return isNaN(d.getTime()) ? null : d.toLocaleTimeString("hi-IN", { hour: "2-digit", minute: "2-digit" });
+                    } catch {
+                      return null;
+                    }
+                  };
 
-                  {/* 1. शिकायत दर्ज */}
-                  <div className="flex items-center gap-2.5 text-emerald-800 font-semibold">
-                    <span className="w-5 h-5 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[11px] font-bold">
-                      ✓
-                    </span>
-                    <span>
-                      {latestRepair.syncStatus === "pending"
-                        ? (currentLanguage === "en" ? "Complaint Registered (Saved on Phone)" : "शिकायत दर्ज (फ़ोन में सुरक्षित)")
-                        : (currentLanguage === "en" ? "Complaint Registered" : "शिकायत दर्ज")}
-                    </span>
-                  </div>
+                  const stages = [
+                    {
+                      id: 1,
+                      labelHi: "मैकेनिक नियुक्त हुआ",
+                      labelEn: "Mechanic Assigned",
+                      icon: "👨‍🔧",
+                      isDone: ["on_the_way", "mechanic_accepted", "arrived", "repair_in_progress", "verification_pending", "completed", "re_repair_required"].includes(latestRepair.status),
+                      isActive: ["finding_mechanic", "mechanic_assigned", "reported"].includes(latestRepair.status),
+                      timestamp: formatTs(latestRepair.createdAt),
+                      detailHi: "मैकेनिक असाइन हुआ",
+                    },
+                    {
+                      id: 2,
+                      labelHi: "मैकेनिक रास्ते में है",
+                      labelEn: "Mechanic On The Way",
+                      icon: "🛵",
+                      isDone: ["arrived", "repair_in_progress", "verification_pending", "completed", "re_repair_required"].includes(latestRepair.status),
+                      isActive: latestRepair.status === "on_the_way" || latestRepair.status === "mechanic_accepted",
+                      timestamp: formatTs(latestRepair.onTheWayAt),
+                      detailHi: "मैकेनिक लोकेशन की ओर रवाना हुआ",
+                    },
+                    {
+                      id: 3,
+                      labelHi: "मैकेनिक पहुँच गया",
+                      labelEn: "Mechanic Arrived",
+                      icon: "📍",
+                      isDone: ["repair_in_progress", "verification_pending", "completed", "re_repair_required"].includes(latestRepair.status),
+                      isActive: latestRepair.status === "arrived",
+                      timestamp: formatTs(latestRepair.arrivedAt),
+                      detailHi: "खेत / कार्यस्थल पर उपस्थित",
+                    },
+                    {
+                      id: 4,
+                      labelHi: "मरम्मत शुरू हुई",
+                      labelEn: "Repair Started",
+                      icon: "🔧",
+                      isDone: ["verification_pending", "completed", "re_repair_required"].includes(latestRepair.status),
+                      isActive: latestRepair.status === "repair_in_progress",
+                      timestamp: formatTs(latestRepair.repairStartedAt),
+                      detailHi: "मशीन के पुर्जों पर कार्य प्रगति पर",
+                    },
+                    {
+                      id: 5,
+                      labelHi: "मरम्मत पूरी हुई",
+                      labelEn: "Repair Completed",
+                      icon: "⚙️",
+                      isDone: ["verification_pending", "completed", "re_repair_required"].includes(latestRepair.status),
+                      isActive: false,
+                      timestamp: formatTs(latestRepair.repairCompletedAt),
+                      detailHi: "मैकेनिक द्वारा कार्य संपन्न",
+                    },
+                    {
+                      id: 6,
+                      labelHi: "मशीन की जाँच बाकी है",
+                      labelEn: "Machine Verification Pending",
+                      icon: "🔍",
+                      isDone: latestRepair.status === "completed",
+                      isActive: latestRepair.status === "verification_pending",
+                      isAlert: latestRepair.status === "re_repair_required",
+                      timestamp: latestRepair.status === "completed" ? "जाँच सफल" : latestRepair.status === "re_repair_required" ? "जाँच असफल" : null,
+                      detailHi: latestRepair.status === "completed" ? "मशीन तैयार (Job-Ready)" : latestRepair.status === "re_repair_required" ? "पुनः मरम्मत जरूरी" : "चलाकर जाँच करें",
+                    },
+                  ];
 
-                  {/* 2. मैकेनिक नियुक्त */}
-                  <div
-                    className={`flex items-center gap-2.5 font-semibold ${
-                      latestRepair.status === "finding_mechanic"
-                        ? "text-amber-800"
-                        : ["mechanic_assigned", "mechanic_accepted", "repair_in_progress", "verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                        ? "text-emerald-800"
-                        : "text-slate-400"
-                    }`}
-                  >
-                    <span
-                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
-                        latestRepair.status === "finding_mechanic"
-                          ? "bg-amber-500 text-white"
-                          : ["mechanic_assigned", "mechanic_accepted", "repair_in_progress", "verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                          ? "bg-emerald-700 text-white"
-                          : "border border-slate-300 bg-white text-slate-400"
-                      }`}
-                    >
-                      {["mechanic_assigned", "mechanic_accepted", "repair_in_progress", "verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                        ? "✓"
-                        : latestRepair.status === "finding_mechanic"
-                        ? "●"
-                        : "○"}
-                    </span>
-                    <span>
-                      {latestRepair.status === "finding_mechanic"
-                        ? (currentLanguage === "en" ? "Mechanic Assigned (Searching...)" : "मैकेनिक नियुक्त (खोज जारी...)")
-                        : (currentLanguage === "en" ? "Mechanic Assigned" : "मैकेनिक नियुक्त")}
-                    </span>
-                  </div>
+                  return (
+                    <div className="p-4 bg-slate-50/90 rounded-2xl border border-slate-200 space-y-3 text-xs">
+                      <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                        <div className="font-extrabold text-slate-800 text-sm flex items-center gap-1.5">
+                          <span>⏱️</span>
+                          <span>{currentLanguage === "en" ? "Repair Progress Timeline" : "मरम्मत प्रगति टाइमलाइन"}</span>
+                        </div>
+                        <span className="text-[11px] font-semibold text-slate-500">
+                          {currentLanguage === "en" ? "Step-by-step update" : "चरणबद्ध विवरण"}
+                        </span>
+                      </div>
 
-                  {/* 3. मैकेनिक रास्ते में */}
-                  <div
-                    className={`flex items-center gap-2.5 font-semibold ${
-                      ["mechanic_assigned", "mechanic_accepted"].includes(latestRepair.status)
-                        ? "text-amber-800"
-                        : ["repair_in_progress", "verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                        ? "text-emerald-800"
-                        : "text-slate-400"
-                    }`}
-                  >
-                    <span
-                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
-                        ["mechanic_assigned", "mechanic_accepted"].includes(latestRepair.status)
-                          ? "bg-amber-500 text-white"
-                          : ["repair_in_progress", "verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                          ? "bg-emerald-700 text-white"
-                          : "border border-slate-300 bg-white text-slate-400"
-                      }`}
-                    >
-                      {["repair_in_progress", "verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                        ? "✓"
-                        : ["mechanic_assigned", "mechanic_accepted"].includes(latestRepair.status)
-                        ? "●"
-                        : "○"}
-                    </span>
-                    <span>
-                      {currentLanguage === "en" ? "Mechanic On The Way" : "मैकेनिक रास्ते में"}
-                    </span>
-                  </div>
+                      <div className="space-y-2.5">
+                        {stages.map((stage, idx) => {
+                          const isLast = idx === stages.length - 1;
 
-                  {/* 4. मरम्मत */}
-                  <div
-                    className={`flex items-center gap-2.5 font-semibold ${
-                      latestRepair.status === "repair_in_progress"
-                        ? "text-blue-800"
-                        : ["verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                        ? "text-emerald-800"
-                        : "text-slate-400"
-                    }`}
-                  >
-                    <span
-                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
-                        latestRepair.status === "repair_in_progress"
-                          ? "bg-blue-600 text-white"
-                          : ["verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                          ? "bg-emerald-700 text-white"
-                          : "border border-slate-300 bg-white text-slate-400"
-                      }`}
-                    >
-                      {["verification_pending", "re_repair_required", "completed"].includes(latestRepair.status)
-                        ? "✓"
-                        : latestRepair.status === "repair_in_progress"
-                        ? "●"
-                        : "○"}
-                    </span>
-                    <span>
-                      {latestRepair.status === "repair_in_progress"
-                        ? (currentLanguage === "en" ? "Repairing (In Progress...)" : "मरम्मत (जारी है...)")
-                        : (currentLanguage === "en" ? "Repairing" : "मरम्मत")}
-                    </span>
-                  </div>
+                          return (
+                            <div key={stage.id} className="relative flex items-start gap-3">
+                              {/* Connector vertical line */}
+                              {!isLast && (
+                                <div
+                                  className={`absolute left-4 top-8 -bottom-3 w-0.5 transition-colors ${
+                                    stage.isDone ? "bg-emerald-600" : "bg-slate-200"
+                                  }`}
+                                />
+                              )}
 
-                  {/* 5. जाँच */}
-                  <div
-                    className={`flex items-center gap-2.5 font-semibold ${
-                      latestRepair.status === "verification_pending"
-                        ? "text-amber-800"
-                        : latestRepair.status === "completed"
-                        ? "text-emerald-800"
-                        : latestRepair.status === "re_repair_required"
-                        ? "text-red-800"
-                        : "text-slate-400"
-                    }`}
-                  >
-                    <span
-                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
-                        latestRepair.status === "verification_pending"
-                          ? "bg-amber-500 text-white"
-                          : latestRepair.status === "completed"
-                          ? "bg-emerald-700 text-white"
-                          : latestRepair.status === "re_repair_required"
-                          ? "bg-red-500 text-white"
-                          : "border border-slate-300 bg-white text-slate-400"
-                      }`}
-                    >
-                      {latestRepair.status === "completed"
-                        ? "✓"
-                        : latestRepair.status === "re_repair_required"
-                        ? "✕"
-                        : latestRepair.status === "verification_pending"
-                        ? "●"
-                        : "○"}
-                    </span>
-                    <span>
-                      {latestRepair.status === "verification_pending"
-                        ? (currentLanguage === "en" ? "Inspection (Test Machine)" : "जाँच (मशीन चलाकर देखें)")
-                        : latestRepair.status === "re_repair_required"
-                        ? (currentLanguage === "en" ? "Inspection (Issue Remains)" : "जाँच (समस्या बाकी है)")
-                        : (currentLanguage === "en" ? "Inspection" : "जाँच")}
-                    </span>
-                  </div>
+                              {/* Stage Icon Circle */}
+                              <div
+                                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 z-10 transition-all ${
+                                  stage.isAlert
+                                    ? "bg-red-600 text-white shadow-xs"
+                                    : stage.isActive
+                                    ? "bg-amber-500 text-white ring-4 ring-amber-200 shadow-sm animate-pulse"
+                                    : stage.isDone
+                                    ? "bg-emerald-600 text-white shadow-xs"
+                                    : "bg-white border-2 border-slate-300 text-slate-400"
+                                }`}
+                              >
+                                {stage.isAlert ? "✕" : stage.isDone ? "✓" : stage.icon}
+                              </div>
 
-                  {/* 6. पूरी */}
-                  <div
-                    className={`flex items-center gap-2.5 font-semibold ${
-                      latestRepair.status === "completed"
-                        ? "text-emerald-800"
-                        : latestRepair.status === "re_repair_required"
-                        ? "text-red-800"
-                        : "text-slate-400"
-                    }`}
-                  >
-                    <span
-                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
-                        latestRepair.status === "completed"
-                          ? "bg-emerald-700 text-white"
-                          : latestRepair.status === "re_repair_required"
-                          ? "bg-red-600 text-white"
-                          : "border border-slate-300 bg-white text-slate-400"
-                      }`}
-                    >
-                      {latestRepair.status === "completed"
-                        ? "✓"
-                        : latestRepair.status === "re_repair_required"
-                        ? "✕"
-                        : "○"}
-                    </span>
-                    <span>
-                      {latestRepair.status === "re_repair_required"
-                        ? (currentLanguage === "en" ? "Completed (Re-repair Needed)" : "पूरी (दोबारा मरम्मत जरूरी)")
-                        : (currentLanguage === "en" ? "Completed" : "पूरी")}
-                    </span>
-                  </div>
-                </div>
+                              {/* Stage Content Card */}
+                              <div
+                                className={`flex-1 rounded-xl p-2.5 transition-all ${
+                                  stage.isAlert
+                                    ? "bg-red-50 border border-red-300"
+                                    : stage.isActive
+                                    ? "bg-amber-50/90 border-2 border-amber-400 shadow-xs"
+                                    : stage.isDone
+                                    ? "bg-white border border-slate-200"
+                                    : "bg-slate-100/60 border border-slate-200/60 opacity-70"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <span className="text-sm select-none">{stage.icon}</span>
+                                    <span
+                                      className={`font-black truncate ${
+                                        stage.isAlert
+                                          ? "text-red-900 text-xs sm:text-sm"
+                                          : stage.isActive
+                                          ? "text-amber-950 text-xs sm:text-sm"
+                                          : stage.isDone
+                                          ? "text-slate-900 text-xs"
+                                          : "text-slate-500 text-xs"
+                                      }`}
+                                    >
+                                      {currentLanguage === "en" ? stage.labelEn : stage.labelHi}
+                                    </span>
+                                  </div>
 
-                {/* Verification Pending Action Banner */}
-                {latestRepair.status === "verification_pending" && (
-                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg space-y-2 text-center">
-                    <div className="text-sm font-bold text-amber-950">
-                      {currentLanguage === "en" ? "Repair finished! Please test-run the machine." : "मरम्मत पूरी हो गई है! अब मशीन चलाकर जाँच करें।"}
+                                  {/* Status badge / timestamp */}
+                                  <div className="shrink-0 text-right">
+                                    {stage.isActive ? (
+                                      <span className="bg-amber-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow-2xs">
+                                        ⚡ चालू है
+                                      </span>
+                                    ) : stage.isAlert ? (
+                                      <span className="bg-red-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full">
+                                        समस्या
+                                      </span>
+                                    ) : stage.isDone ? (
+                                      <span className="text-emerald-700 text-[11px] font-bold flex items-center gap-0.5">
+                                        <span>✓</span>
+                                        <span>{stage.timestamp || "पूर्ण"}</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400 text-[10px] font-medium">
+                                        प्रतीक्षित
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium mt-0.5">
+                                  <span>{stage.detailHi}</span>
+                                  {stage.timestamp && stage.isActive && (
+                                    <span className="text-amber-800 font-bold">{stage.timestamp}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <p className="text-xs text-amber-800">
-                      {currentLanguage === "en" ? "Make sure the machine is working properly without issues." : "सुनिश्चित करें कि मशीन अब बिना किसी समस्या के चल रही है।"}
-                    </p>
+                  );
+                })()}
+
+                {/* STAGE 6 ACTION BANNER: Verification Pending (Job-Ready Verification Flow) */}
+                {latestRepair.status === "verification_pending" && (
+                  <div className="bg-gradient-to-br from-emerald-600 to-teal-800 text-white rounded-2xl p-4 shadow-md border-2 border-emerald-900 space-y-3 animate-in fade-in">
+                    <div className="flex items-start gap-3">
+                      <span className="w-12 h-12 rounded-xl bg-white/20 backdrop-blur-xs flex items-center justify-center text-3xl shrink-0">
+                        💧
+                      </span>
+                      <div className="space-y-0.5">
+                        <div className="inline-flex items-center gap-1 bg-white/20 text-white text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">
+                          <span>⚠️</span>
+                          <span>चरण 6: मशीन की जाँच बाकी है</span>
+                        </div>
+                        <h4 className="text-base font-black text-white leading-tight">
+                          {currentLanguage === "en" ? "Repair Complete! Inspect the machine now" : "मरम्मत पूरी हुई! मशीन चलाकर जाँच करें"}
+                        </h4>
+                        <p className="text-xs text-emerald-100 leading-snug">
+                          {currentLanguage === "en"
+                            ? "Test water pump discharge, pressure and ensure zero leakages before certifying as Job-Ready."
+                            : "पंप चालू करके देखें कि पानी पूरी धार से आ रहा है या नहीं। जाँच के बाद ही मशीन को तैयार माना जाएगा।"}
+                        </p>
+                      </div>
+                    </div>
+
                     <button
                       type="button"
                       onClick={() => {
                         const card = getJobCardByRepairId(latestRepair.id) || currentJobCard;
                         if (card) setCurrentJobCard(card);
-                        setCurrentScreen("repair_verification");
+                        setCurrentScreen("job_ready_verification");
                       }}
-                      className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                      className="w-full bg-white hover:bg-emerald-50 active:scale-[0.98] text-emerald-950 font-black py-3.5 px-4 rounded-xl text-sm shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all border border-emerald-200"
                     >
-                      <span>{currentLanguage === "en" ? "Inspect Machine" : "मशीन की जाँच करें"}</span>
+                      <span className="text-lg">🎒</span>
+                      <span>{currentLanguage === "en" ? "Start Job-Ready Verification" : "मशीन की जाँच शुरू करें (Job-Ready Verification)"}</span>
                       <span>➔</span>
                     </button>
                   </div>
@@ -7109,10 +7316,16 @@ export default function AgriPulseApp() {
 
                 {/* Re-repair Required Action Banner */}
                 {latestRepair.status === "re_repair_required" && (
-                  <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg space-y-2 text-center">
-                    <div className="text-sm font-bold text-red-950">
-                      {currentLanguage === "en" ? "Issue not yet resolved — Re-repair is required." : "समस्या अभी ठीक नहीं हुई है — दोबारा मरम्मत की जरूरत है।"}
+                  <div className="p-4 bg-red-50 border-2 border-red-300 rounded-2xl space-y-2.5 text-center shadow-xs">
+                    <div className="w-10 h-10 rounded-full bg-red-600 text-white flex items-center justify-center text-xl mx-auto shadow-sm">
+                      ✕
                     </div>
+                    <div className="text-base font-extrabold text-red-950">
+                      {currentLanguage === "en" ? "Issue not resolved — Re-repair is required." : "समस्या अभी ठीक नहीं हुई है — दोबारा मरम्मत की जरूरत है।"}
+                    </div>
+                    <p className="text-xs text-red-800">
+                      {currentLanguage === "en" ? "Recall technician for free re-inspection and repair." : "मैकेनिक को तुरंत वापस बुलाएं। दोबारा जाँच की जाएगी।"}
+                    </p>
                     <button
                       type="button"
                       onClick={() => {
@@ -7120,28 +7333,52 @@ export default function AgriPulseApp() {
                         if (card) setCurrentJobCard(card);
                         handleReRepair();
                       }}
-                      className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 px-4 rounded-md text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                      className="w-full bg-red-600 hover:bg-red-700 active:scale-[0.98] text-white font-black py-3 px-4 rounded-xl text-sm flex items-center justify-center gap-2 transition-transform cursor-pointer shadow-sm"
                     >
                       <RotateCcw className="w-4 h-4 text-white" />
-                      <span>{currentLanguage === "en" ? "Request Re-Repair" : "दोबारा मरम्मत कराएं"}</span>
+                      <span>{currentLanguage === "en" ? "Request Re-Repair" : "मैकेनिक को दोबारा बुलाएं"}</span>
                     </button>
                   </div>
                 )}
 
                 {/* Completed Celebration Banner */}
                 {latestRepair.status === "completed" && (
-                  <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg space-y-2 text-center">
-                    <div className="text-sm font-bold text-emerald-950">
-                      {currentLanguage === "en" ? "Machine repair successfully completed." : "मशीन की मरम्मत सफलतापूर्वक पूरी हो गई।"}
+                  <div className="p-4.5 bg-gradient-to-br from-emerald-50 to-teal-50 border-2 border-emerald-300 rounded-2xl space-y-3 text-center shadow-xs">
+                    <div className="w-12 h-12 rounded-full bg-emerald-600 text-white flex items-center justify-center text-2xl mx-auto shadow-sm">
+                      ✓
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setCurrentScreen("machines")}
-                      className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                    >
-                      <span>{currentLanguage === "en" ? "View My Machine" : "मेरी मशीन देखें"}</span>
-                      <span>➔</span>
-                    </button>
+                    <div className="space-y-0.5">
+                      <div className="text-base font-black text-emerald-950">
+                        {currentLanguage === "en" ? "Machine is JOB-READY & Certified!" : "मशीन जाँच में पास — काम के लिए तैयार (JOB READY)"}
+                      </div>
+                      <p className="text-xs text-emerald-800">
+                        {currentLanguage === "en"
+                          ? "Verification record saved into Machine Passport."
+                          : "जाँच का संपूर्ण विवरण मशीन पासपोर्ट में दर्ज हो चुका है।"}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const m = machines.find((mach) => mach.id === latestRepair.machineId) || selectedMachine || machines[0];
+                          setSelectedMachine(m);
+                          setCurrentScreen("machine_detail");
+                        }}
+                        className="w-full bg-emerald-700 hover:bg-emerald-800 active:scale-[0.98] text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                      >
+                        <span>📖</span>
+                        <span>{currentLanguage === "en" ? "Machine Passport" : "मशीन पासपोर्ट देखें"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentScreen("machines")}
+                        className="w-full bg-white hover:bg-slate-50 text-slate-800 font-bold py-2.5 px-3 rounded-xl text-xs border border-slate-300 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <span>🚜</span>
+                        <span>{currentLanguage === "en" ? "My Machines" : "मेरी मशीनें"}</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -9170,7 +9407,7 @@ export default function AgriPulseApp() {
               technicianNameHi={activeCard?.technicianNameHi || "Mechanic"}
               technicianId={activeCard?.technicianId}
               repairDate={repairDateStr}
-              onBack={() => setCurrentScreen("repair_verification")}
+              onBack={() => setCurrentScreen("repair")}
               onComplete={(record) => {
                 setCurrentJobReadinessRecord(record);
                 const machineId = machineForJrv?.id || record.machineId || "sprayer";

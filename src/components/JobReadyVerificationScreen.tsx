@@ -119,6 +119,22 @@ const CLEAN_WATER_TEST_SAMPLE_PHOTO =
     </svg>
   `);
 
+const WATER_PUMP_TEST_SAMPLE_PHOTO =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
+      <rect width="400" height="300" fill="#0f172a" rx="16"/>
+      <rect x="20" y="20" width="360" height="260" fill="#1e293b" rx="12"/>
+      <path d="M 50 160 Q 180 40 330 150" stroke="#0284c7" stroke-width="8" fill="none"/>
+      <circle cx="90" cy="155" r="14" fill="#38bdf8"/>
+      <circle cx="190" cy="110" r="16" fill="#38bdf8"/>
+      <circle cx="290" cy="145" r="14" fill="#38bdf8"/>
+      <path d="M 270 145 Q 350 180 360 240" stroke="#38bdf8" stroke-width="12" fill="none" opacity="0.8"/>
+      <text x="200" y="55" fill="#f8fafc" font-size="16" font-weight="bold" text-anchor="middle" font-family="sans-serif">Water Pump Flow &amp; Priming Test</text>
+      <text x="200" y="265" fill="#34d399" font-size="14" font-weight="bold" text-anchor="middle" font-family="sans-serif">✓ Strong Water Discharge • No Air Lock • Normal Pressure</text>
+    </svg>
+  `);
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function CheckIcon({ status }: { status: JobReadyCheckStatus }) {
@@ -225,8 +241,25 @@ export default function JobReadyVerificationScreen({
   onCallTechnician,
   onRetest,
 }: JobReadyVerificationScreenProps) {
+  const isWaterPump =
+    machineId === "water_pump" ||
+    (machineNameHi || "").toLowerCase().includes("pump") ||
+    (machineNameHi || "").includes("पंप");
+
+  const samplePhoto = isWaterPump ? WATER_PUMP_TEST_SAMPLE_PHOTO : CLEAN_WATER_TEST_SAMPLE_PHOTO;
+
   const [subStep, setSubStep] = useState<SubStep>("intro");
-  const [checks, setChecks] = useState<JobReadyCheck[]>(getInitialSprayingChecks);
+  const [checks, setChecks] = useState<JobReadyCheck[]>(() => {
+    if (isWaterPump) {
+      return [
+        { id: "no_leak", labelHi: "पाइप व सील से पानी का रिसाव नहीं है (No Leak)", isRequired: true, status: "pending" },
+        { id: "all_nozzles_active", labelHi: "सक्शन व पानी का डिस्चार्ज पूरा है (Full Water Flow)", isRequired: true, status: "pending" },
+        { id: "spray_pattern_normal", labelHi: "पंप प्रेशर व आवाज सामान्य है (Pressure & Sound Normal)", isRequired: true, status: "pending" },
+        { id: "safety_check", labelHi: "Safety check passed (Technician-Verified)", isRequired: true, isTechnicianVerified: true, status: "pending" },
+      ];
+    }
+    return getInitialSprayingChecks();
+  });
   const [capturedItems, setCapturedItems] = useState<CapturedItem[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -303,7 +336,7 @@ export default function JobReadyVerificationScreen({
     if (!videoRef.current || !streamRef.current) {
       setCapturedItems((prev) => [
         ...prev,
-        { url: CLEAN_WATER_TEST_SAMPLE_PHOTO, type: "photo", capturedAt: new Date().toISOString() },
+        { url: samplePhoto, type: "photo", capturedAt: new Date().toISOString() },
       ]);
       return;
     }
@@ -318,13 +351,13 @@ export default function JobReadyVerificationScreen({
       ...prev,
       { url: dataUrl, type: "photo", capturedAt: new Date().toISOString() },
     ]);
-  }, []);
+  }, [samplePhoto]);
 
   const startRecording = useCallback(() => {
     if (!streamRef.current) {
       setCapturedItems((prev) => [
         ...prev,
-        { url: CLEAN_WATER_TEST_SAMPLE_PHOTO, type: "video", capturedAt: new Date().toISOString() },
+        { url: samplePhoto, type: "video", capturedAt: new Date().toISOString() },
       ]);
       return;
     }
@@ -536,8 +569,17 @@ export default function JobReadyVerificationScreen({
       <div className="flex items-center justify-between pb-2 border-b border-slate-200">
         <button
           type="button"
-          onClick={onBack}
-          className="flex items-center gap-1.5 text-base font-bold text-slate-600 hover:text-slate-900"
+          onClick={() => {
+            if (subStep === "camera_capture" || subStep === "evidence_preview") {
+              stopCameraStream();
+              setSubStep("checklist");
+            } else if (subStep === "checklist") {
+              setSubStep("intro");
+            } else {
+              onBack();
+            }
+          }}
+          className="flex items-center gap-1.5 text-base font-bold text-slate-600 hover:text-slate-900 cursor-pointer"
         >
           <ArrowLeft className="w-5 h-5" />
           <span>वापस</span>
@@ -562,13 +604,13 @@ export default function JobReadyVerificationScreen({
           {/* Hero */}
           <div className="text-center space-y-2 pt-2">
             <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center text-3xl mx-auto shadow-sm">
-              🎒
+              {isWaterPump ? "💧" : "🎒"}
             </div>
             <h2 className="text-2xl font-black text-slate-900 leading-tight">
               क्या मशीन आपके अगले<br />काम के लिए तैयार है?
             </h2>
             <p className="text-sm font-bold text-slate-500">
-              Farm Activity: <span className="text-emerald-700">🌿 Spraying</span>
+              Farm Activity: <span className="text-emerald-700">{isWaterPump ? "💧 सिंचाई (Irrigation / Water Flow Test)" : "🌿 Spraying"}</span>
             </p>
           </div>
 

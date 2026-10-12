@@ -59,6 +59,7 @@ export interface Technician {
   serviceCentreId?: string;
   employmentType?: "centre_technician" | "associated" | "independent";
   providesDoorstepService?: boolean;
+  avatarUrl?: string;
 }
 
 const FARMER_CENTER = { lat: 26.8467, lng: 80.9462 };
@@ -170,11 +171,12 @@ export const mockTechnicians: Technician[] = [
     primaryExpertise: "Pump & Irrigation Specialist",
     primaryExpertiseHi: "पंप व सिंचाई उपकरण विशेषज्ञ",
     available: true,
-    distanceKm: 7.1,
+    distanceKm: 3.2,
     rating: 4.7,
     completedJobs: 72,
     activeJobs: 0,
-    latitude: 26.7991, // 7.1 km from Farmer Center via Haversine
+    avatarUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='50' fill='%2315803d'/><circle cx='50' cy='38' r='18' fill='%23fed7aa'/><path d='M20 86 c0 -18 14 -28 30 -28 s30 10 30 28 Z' fill='%23fed7aa'/><path d='M35 28 h30 v-6 c0 -4 -6 -8 -15 -8 s-15 4 -15 8 Z' fill='%230f172a'/><circle cx='43' cy='36' r='2.5' fill='%230f172a'/><circle cx='57' cy='36' r='2.5' fill='%230f172a'/><path d='M44 45 q6 5 12 0' stroke='%230f172a' stroke-width='2' fill='none'/></svg>",
+    latitude: 26.7991, // 3.2 km from Farmer Center via Haversine
     longitude: 80.8986,
     serviceAreaKm: 15,
     locationUpdatedAt: "2026-09-28T06:15:00.000Z",

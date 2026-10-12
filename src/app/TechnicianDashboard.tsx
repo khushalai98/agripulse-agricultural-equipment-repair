@@ -53,10 +53,24 @@ import {
   PRICE_CHANGE_REASONS,
 } from "@/services/pricingService";
 import { calculateTechnicianSettlement } from "@/services/businessModelService";
-import { updateRepairStatus, ensureSimulatedDemoRequest, createSimulatedDemoRepair } from "@/services/storageService";
+import {
+  updateRepairStatus,
+  ensureSimulatedDemoRequest,
+  createSimulatedDemoRepair,
+  seedRameshPatilDemoRepair,
+} from "@/services/storageService";
 import { getSparePartById, SparePart } from "@/services/sparePartData";
 import { haversineDistanceKm } from "@/services/locationService";
 import { LanguageCode } from "@/i18n";
+import {
+  pushTechnicianHistory,
+  replaceTechnicianHistory,
+  getTechnicianHistoryDepth,
+  getTechnicianParentView,
+  hasOpenModals,
+  closeTopModal,
+  registerOpenModal,
+} from "@/services/navigationHistory";
 
 interface TechnicianDashboardProps {
   session: AuthSession;
@@ -225,6 +239,190 @@ export default function TechnicianDashboard({
     setFeedbackToast(msg);
     setTimeout(() => setFeedbackToast(null), 3500);
   };
+
+  // Flag to avoid duplicate history pushes when popstate is handling back navigation
+  const isPoppingTechRef = React.useRef<boolean>(false);
+
+  // Initialize and register popstate for Technician navigation history (Strict Role Isolation)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      replaceTechnicianHistory({
+        role: "technician",
+        activeTab: "home",
+        repairsSubTab,
+      });
+    }
+
+    const handlePopState = (e: PopStateEvent) => {
+      if (!e.state || e.state.role !== "technician") {
+        return;
+      }
+
+      isPoppingTechRef.current = true;
+
+      // Close open sub-modals
+      setIsRejecting(false);
+      setIsConfirmingAccept(false);
+      setIsTripConfirmationOpen(false);
+      setIsCompletingModalOpen(false);
+      setIsPartsToolsWizardOpen(false);
+      setShowAddSkill(false);
+      setIsEditingPrice(false);
+      setCompletingRepairId(null);
+
+      // Restore activeTab
+      if (e.state.activeTab) {
+        setActiveTab(e.state.activeTab);
+      }
+      if (e.state.repairsSubTab) {
+        setRepairsSubTab(e.state.repairsSubTab);
+      }
+
+      // Restore selectedJobCardId
+      setSelectedJobCardId(e.state.selectedJobCardId || null);
+
+      // Restore viewingRequest
+      if (e.state.viewingRequestId) {
+        const found = repairs.find((r) => r.id === e.state.viewingRequestId);
+        setViewingRequest(found || null);
+      } else {
+        setViewingRequest(null);
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [repairs]);
+
+  // Tab switcher with history integration
+  const switchTab = React.useCallback((tab: "home" | "requests" | "repairs" | "profile") => {
+    setActiveTab(tab);
+    setSelectedJobCardId(null);
+    if (!isPoppingTechRef.current) {
+      pushTechnicianHistory({
+        role: "technician",
+        activeTab: tab,
+        repairsSubTab,
+      });
+    }
+    isPoppingTechRef.current = false;
+  }, [repairsSubTab]);
+
+  // Open Request Details modal with history integration
+  const handleOpenRequestDetails = React.useCallback((req: RepairRequest) => {
+    setViewingRequest(req);
+    registerOpenModal("tech_viewing_request", () => setViewingRequest(null));
+    pushTechnicianHistory({
+      role: "technician",
+      activeTab,
+      repairsSubTab,
+      viewingRequestId: req.id,
+    });
+  }, [activeTab, repairsSubTab]);
+
+  // Open Digital Job Card with history integration
+  const handleOpenJobCard = React.useCallback((jobCardId: string, fromView?: "viewing_request" | "repairs") => {
+    setSelectedJobCardId(jobCardId);
+    pushTechnicianHistory({
+      role: "technician",
+      activeTab: "repairs",
+      repairsSubTab: "active",
+      selectedJobCardId: jobCardId,
+      viewingRequestId: viewingRequest?.id || null,
+      fromView: fromView || (viewingRequest ? "viewing_request" : "repairs"),
+    });
+  }, [viewingRequest]);
+
+  // Unified Back navigation for Technician interface
+  const handleTechBack = React.useCallback(() => {
+    // 1. Check if any overlay / modal is open (Requirement 7)
+    if (hasOpenModals()) {
+      closeTopModal();
+      return;
+    }
+
+    if (isRejecting) {
+      setIsRejecting(false);
+      return;
+    }
+    if (isConfirmingAccept) {
+      setIsConfirmingAccept(false);
+      return;
+    }
+    if (isTripConfirmationOpen) {
+      setIsTripConfirmationOpen(false);
+      return;
+    }
+    if (isCompletingModalOpen) {
+      setIsCompletingModalOpen(false);
+      return;
+    }
+    if (isPartsToolsWizardOpen) {
+      setIsPartsToolsWizardOpen(false);
+      return;
+    }
+    if (showAddSkill) {
+      setShowAddSkill(false);
+      return;
+    }
+    if (isEditingPrice) {
+      setIsEditingPrice(false);
+      return;
+    }
+    if (completingRepairId) {
+      setCompletingRepairId(null);
+      return;
+    }
+
+    // 2. Real navigation history pop
+    if (getTechnicianHistoryDepth() > 1 && typeof window !== "undefined") {
+      isPoppingTechRef.current = true;
+      window.history.back();
+      return;
+    }
+
+    // 3. Fallback to appropriate parent view if history is exhausted (Requirement 8)
+    const parent = getTechnicianParentView({
+      role: "technician",
+      activeTab,
+      repairsSubTab,
+      selectedJobCardId,
+      viewingRequestId: viewingRequest?.id || null,
+      timestamp: Date.now(),
+    });
+
+    if (parent.selectedJobCardId !== undefined) {
+      setSelectedJobCardId(parent.selectedJobCardId);
+    }
+    if (parent.viewingRequestId !== undefined) {
+      if (parent.viewingRequestId) {
+        const found = repairs.find((r) => r.id === parent.viewingRequestId);
+        setViewingRequest(found || null);
+      } else {
+        setViewingRequest(null);
+      }
+    }
+    if (parent.activeTab) {
+      setActiveTab(parent.activeTab);
+    }
+    if (parent.repairsSubTab) {
+      setRepairsSubTab(parent.repairsSubTab);
+    }
+  }, [
+    isRejecting,
+    isConfirmingAccept,
+    isTripConfirmationOpen,
+    isCompletingModalOpen,
+    isPartsToolsWizardOpen,
+    showAddSkill,
+    isEditingPrice,
+    completingRepairId,
+    activeTab,
+    repairsSubTab,
+    selectedJobCardId,
+    viewingRequest,
+    repairs,
+  ]);
 
   // Seed simulated demo request on mount
   useEffect(() => {
@@ -616,22 +814,113 @@ export default function TechnicianDashboard({
       { statusTextHi: string; repairStatus: RepairRequest["status"] }
     > = {
       available: { statusTextHi: "उपलब्ध", repairStatus: "technician_assigned" },
-      assigned: { statusTextHi: "मैकेनिक नियुक्त हो गया है", repairStatus: "technician_assigned" },
+      assigned: { statusTextHi: "मैकेनिक नियुक्त हुआ", repairStatus: "technician_assigned" },
       on_the_way: { statusTextHi: "मैकेनिक रास्ते में है", repairStatus: "on_the_way" },
-      arrived: { statusTextHi: "मैकेनिक पहुँच गया है", repairStatus: "arrived" },
-      repairing: { statusTextHi: "मरम्मत चल रही है", repairStatus: "repairing" },
-      completed: { statusTextHi: "मरम्मत पूरी हुई", repairStatus: "verification_pending" },
+      arrived: { statusTextHi: "मैकेनिक पहुँच गया", repairStatus: "arrived" },
+      repairing: { statusTextHi: "मरम्मत शुरू हुई", repairStatus: "repairing" },
+      completed: { statusTextHi: "मरम्मत पूरी हुई — जाँच बाकी", repairStatus: "verification_pending" },
     };
 
     const target = statusMap[nextStatus];
     const updated = updateTechnicianWorkflowStatus(activeJobCard.jobId, nextStatus);
     if (updated) {
-      updateRepairStatus(updated.repairRequestId, {
+      const nowIso = new Date().toISOString();
+      const timestampUpdates: Partial<RepairRequest> = {
         status: target.repairStatus,
         statusTextHi: target.statusTextHi,
         technicianWorkflowStatus: nextStatus,
-      });
+      };
+      if (nextStatus === "on_the_way") timestampUpdates.onTheWayAt = nowIso;
+      if (nextStatus === "arrived") timestampUpdates.arrivedAt = nowIso;
+      if (nextStatus === "repairing") timestampUpdates.repairStartedAt = nowIso;
+      if (nextStatus === "completed") timestampUpdates.repairCompletedAt = nowIso;
+
+      updateRepairStatus(updated.repairRequestId, timestampUpdates);
       onRefreshData();
+    }
+  };
+
+  // State to prevent duplicate submissions
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState<boolean>(false);
+
+  // Dedicated single-click workflow advancement handler (Technician Flow)
+  const handleStepWorkflowStatus = async (
+    repair: RepairRequest,
+    nextStatus: "assigned" | "on_the_way" | "arrived" | "repairing" | "completed"
+  ) => {
+    if (isUpdatingStatus) return;
+
+    // Validate sequential progression: assigned -> on_the_way -> arrived -> repairing -> completed
+    const currentStatus = repair.technicianWorkflowStatus || (
+      repair.status === "on_the_way" ? "on_the_way" :
+      repair.status === "arrived" ? "arrived" :
+      (repair.status === "repairing" || repair.status === "repair_in_progress") ? "repairing" :
+      (repair.status === "verification_pending" || repair.status === "completed") ? "completed" : "assigned"
+    );
+
+    const allowedTransitions: Record<string, string[]> = {
+      assigned: ["on_the_way"],
+      on_the_way: ["arrived"],
+      arrived: ["repairing"],
+      repairing: ["completed"],
+      completed: [],
+    };
+
+    if (allowedTransitions[currentStatus] && !allowedTransitions[currentStatus].includes(nextStatus)) {
+      showToast("⚠️ अमान्य बदलाव: अगला क्रमवार चरण चुनें।");
+      return;
+    }
+
+    setIsUpdatingStatus(true);
+
+    try {
+      const nowIso = new Date().toISOString();
+      const updates: Partial<RepairRequest> = {
+        technicianWorkflowStatus: nextStatus,
+      };
+
+      let toastMsg = "";
+
+      if (nextStatus === "assigned") {
+        updates.status = "technician_assigned";
+        updates.statusTextHi = "मैकेनिक नियुक्त हुआ";
+        updates.assignedAt = nowIso;
+        toastMsg = "✓ स्थिति: मैकेनिक नियुक्त हुआ";
+      } else if (nextStatus === "on_the_way") {
+        updates.status = "on_the_way";
+        updates.statusTextHi = "मैकेनिक रास्ते में है";
+        updates.onTheWayAt = nowIso;
+        toastMsg = "🛵 रास्ते में निकला! किसान को सूचना भेजी गई।";
+      } else if (nextStatus === "arrived") {
+        updates.status = "arrived";
+        updates.statusTextHi = "मैकेनिक पहुँच गया";
+        updates.arrivedAt = nowIso;
+        toastMsg = "📍 किसान के स्थान पर पहुँचे!";
+      } else if (nextStatus === "repairing") {
+        updates.status = "repairing";
+        updates.statusTextHi = "मरम्मत शुरू हुई";
+        updates.repairStartedAt = nowIso;
+        toastMsg = "⚙️ मरम्मत कार्य प्रारंभ हुआ!";
+      } else if (nextStatus === "completed") {
+        updates.status = "verification_pending";
+        updates.statusTextHi = "मरम्मत पूरी हुई — जाँच बाकी";
+        updates.repairCompletedAt = nowIso;
+        toastMsg = "🛠️ मरम्मत पूरी हुई! अब किसान मशीन की जाँच (Job-Ready) करेंगे।";
+      }
+
+      // Also sync job card if available
+      const card = getJobCardByRepairId(repair.id) || getLatestJobCard();
+      if (card) {
+        updateTechnicianWorkflowStatus(card.jobId, nextStatus);
+      }
+
+      updateRepairStatus(repair.id, updates);
+      onRefreshData();
+      showToast(toastMsg);
+    } catch {
+      showToast("स्थिति अपडेट करने में समस्या आई");
+    } finally {
+      setIsUpdatingStatus(false);
     }
   };
 
@@ -722,8 +1011,20 @@ export default function TechnicianDashboard({
       {activeTab !== "profile" && (
         <header className="bg-slate-900 text-white px-3.5 py-2.5 sm:px-4 sm:py-3 border-b border-slate-800 shadow-sm sticky top-0 z-40">
           <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
-            {/* Left: Real Technician Name in one clear line & small secondary location/phone */}
-            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            {/* Left: Back Arrow (when in subview) & Real Technician Name */}
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
+              {(activeTab !== "home" || selectedJobCardId || viewingRequest) && (
+                <button
+                  type="button"
+                  id="tech-header-back-btn"
+                  onClick={handleTechBack}
+                  className="h-8 w-8 sm:h-9 sm:w-9 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white flex items-center justify-center transition-all cursor-pointer shrink-0 active:scale-95"
+                  aria-label="वापस"
+                  title="वापस जाएं"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+              )}
               <span className="p-2 bg-slate-800 rounded-lg border border-slate-700/80 text-emerald-400 shrink-0">
                 <Wrench className="w-4 h-4 sm:w-5 sm:h-5" />
               </span>
@@ -791,6 +1092,7 @@ export default function TechnicianDashboard({
           }}
           currentLanguage={currentLanguage}
           onLogout={onLogout}
+          onBack={handleTechBack}
         />
       ) : (
         <main className="max-w-4xl mx-auto px-4 py-4 space-y-4">
@@ -874,10 +1176,7 @@ export default function TechnicianDashboard({
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setActiveTab("requests");
-                    setSelectedJobCardId(null);
-                  }}
+                  onClick={() => switchTab("requests")}
                   className="bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 cursor-pointer transition-colors shadow-2xs"
                 >
                   अनुरोध देखें ➔
@@ -894,7 +1193,7 @@ export default function TechnicianDashboard({
                 </h2>
                 <button
                   type="button"
-                  onClick={() => setActiveTab("requests")}
+                  onClick={() => switchTab("requests")}
                   className="text-xs font-bold text-emerald-700 hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <span>सभी देखें ({incomingRepairs.length})</span>
@@ -966,7 +1265,7 @@ export default function TechnicianDashboard({
                     <div className="flex items-center justify-end pt-1">
                       <button
                         type="button"
-                        onClick={() => setViewingRequest(req)}
+                        onClick={() => handleOpenRequestDetails(req)}
                         className="bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white font-bold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors"
                       >
                         <span>अनुरोध देखें</span>
@@ -988,10 +1287,7 @@ export default function TechnicianDashboard({
                   </h2>
                   <button
                     type="button"
-                    onClick={() => {
-                      setActiveTab("repairs");
-                      setRepairsSubTab("active");
-                    }}
+                    onClick={() => switchTab("repairs")}
                     className="text-xs font-bold text-emerald-700 hover:underline flex items-center gap-1 cursor-pointer"
                   >
                     <span>मेरी मरम्मत देखें ➔</span>
@@ -1185,7 +1481,7 @@ export default function TechnicianDashboard({
 
                     <button
                       type="button"
-                      onClick={() => setViewingRequest(req)}
+                      onClick={() => handleOpenRequestDetails(req)}
                       className="bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white font-bold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors"
                     >
                       <span>अनुरोध देखें</span>
@@ -1260,11 +1556,11 @@ export default function TechnicianDashboard({
                 {/* Back button */}
                 <button
                   type="button"
-                  onClick={() => setSelectedJobCardId(null)}
+                  onClick={handleTechBack}
                   className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white px-3 py-1.5 rounded-md border border-slate-300 cursor-pointer shadow-xs"
                 >
                   <ArrowLeft className="w-4 h-4" />
-                  <span>सभी कार्यों की सूची पर वापस जाएं</span>
+                  <span>वापस जाएं</span>
                 </button>
 
                 {/* Stepper Status Banner */}
@@ -1351,7 +1647,7 @@ export default function TechnicianDashboard({
                         className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
                       >
                         <Navigation className="w-4 h-4" />
-                        <span>रास्ते में निकला (On The Way) ➔</span>
+                        <span>रास्ते में हूँ ➔</span>
                       </button>
                     )}
 
@@ -1362,7 +1658,7 @@ export default function TechnicianDashboard({
                       className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
                     >
                       <MapPin className="w-4 h-4" />
-                      <span>खेत/स्थान पर पहुँचा (Arrived) ➔</span>
+                      <span>पहुँच गया ➔</span>
                     </button>
                   )}
 
@@ -1373,7 +1669,7 @@ export default function TechnicianDashboard({
                       className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
                     >
                       <Wrench className="w-4 h-4" />
-                      <span>मरम्मत कार्य शुरू करें (Start Repair) ➔</span>
+                      <span>मरम्मत शुरू करें ➔</span>
                     </button>
                   )}
 
@@ -1384,13 +1680,16 @@ export default function TechnicianDashboard({
                       className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 px-4 rounded-md text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
                     >
                       <CheckCircle2 className="w-4 h-4" />
-                      <span>मरम्मत पूर्ण चिह्नित करें (Mark Completed) ➔</span>
+                      <span>मरम्मत पूरी हुई ✓</span>
                     </button>
                   )}
 
                   {activeJobCard.technicianWorkflowStatus === "completed" && (
-                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md text-center text-emerald-900 font-medium text-xs">
-                      ✓ मरम्मत पूरी हो चुकी है। किसान को सत्यापन सूचना भेज दी गई है।
+                    <div className="p-3 bg-amber-50 border border-amber-300 rounded-md text-center text-amber-950 font-bold text-xs space-y-1">
+                      <div>✓ मरम्मत पूरी हो चुकी है</div>
+                      <div className="text-[11px] text-amber-800 font-normal">
+                        किसान द्वारा मशीन की जाँच की प्रतीक्षा है (Verification Pending)
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1628,147 +1927,267 @@ export default function TechnicianDashboard({
                     </button>
                   </div>
                 ) : (
-                  activeRepairs.map((repair) => {
-                    const card = getJobCardByRepairId(repair.id) || getLatestJobCard();
-                    const stages = getRepairProgressStages(repair, !!contactedRepairs[repair.id]);
-                    const isRepairing = repair.status === "repairing" || repair.technicianWorkflowStatus === "repairing";
+                  <>
+                    {/* ⚡ HACKATHON DEMO SIMULATION CONTROLLER BANNER */}
+                    <div className="bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl p-3.5 shadow-xs space-y-2.5">
+                      <div className="flex items-center justify-between text-xs font-bold text-amber-950">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-lg">🎯</span>
+                          <span>हैकथॉन डेमो कंट्रोल: रमेश पाटिल (वाटर पंप)</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            seedRameshPatilDemoRepair();
+                            onRefreshData();
+                            showToast("✓ डेमो अनुरोध रीसेट: रमेश पाटिल (वाटर पंप)");
+                          }}
+                          className="text-[11px] bg-amber-200 hover:bg-amber-300 active:scale-95 text-amber-950 font-bold px-2.5 py-1 rounded-lg cursor-pointer transition-all border border-amber-300"
+                        >
+                          डेमो लोड / रीसेट
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-amber-800 font-medium">
+                        प्रेजेंटर 1-क्लिक से स्थिति आगे बढ़ा सकते हैं:
+                      </p>
+                      <div className="grid grid-cols-5 gap-1.5 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = repairs.find((r) => r.id === "rep-demo-waterpump-patil") || activeRepairs[0];
+                            if (target) handleStepWorkflowStatus(target, "assigned");
+                          }}
+                          className="text-[10px] sm:text-[11px] bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 py-1.5 px-1 rounded-lg font-bold text-center cursor-pointer shadow-2xs"
+                        >
+                          1. नियुक्त
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = repairs.find((r) => r.id === "rep-demo-waterpump-patil") || activeRepairs[0];
+                            if (target) handleStepWorkflowStatus(target, "on_the_way");
+                          }}
+                          className="text-[10px] sm:text-[11px] bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 py-1.5 px-1 rounded-lg font-bold text-center cursor-pointer shadow-2xs"
+                        >
+                          2. रास्ते में
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = repairs.find((r) => r.id === "rep-demo-waterpump-patil") || activeRepairs[0];
+                            if (target) handleStepWorkflowStatus(target, "arrived");
+                          }}
+                          className="text-[10px] sm:text-[11px] bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 py-1.5 px-1 rounded-lg font-bold text-center cursor-pointer shadow-2xs"
+                        >
+                          3. पहुँच गया
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = repairs.find((r) => r.id === "rep-demo-waterpump-patil") || activeRepairs[0];
+                            if (target) handleStepWorkflowStatus(target, "repairing");
+                          }}
+                          className="text-[10px] sm:text-[11px] bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 py-1.5 px-1 rounded-lg font-bold text-center cursor-pointer shadow-2xs"
+                        >
+                          4. मरम्मत शुरू
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = repairs.find((r) => r.id === "rep-demo-waterpump-patil") || activeRepairs[0];
+                            if (target) handleStepWorkflowStatus(target, "completed");
+                          }}
+                          className="text-[10px] sm:text-[11px] bg-emerald-700 hover:bg-emerald-800 text-white py-1.5 px-1 rounded-lg font-bold text-center cursor-pointer shadow-2xs"
+                        >
+                          5. मरम्मत पूरी
+                        </button>
+                      </div>
+                    </div>
 
-                    return (
-                      <div
-                        key={repair.id}
-                        className="bg-white rounded-xl p-4 border border-slate-200/90 shadow-2xs space-y-3"
-                      >
-                        {/* Farmer & Machine info */}
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-3">
-                            <span className="text-2xl p-2.5 bg-emerald-50 rounded-xl border border-emerald-100 flex-shrink-0">
-                              {repair.machineIcon || "🚜"}
+                    {activeRepairs.map((repair) => {
+                      const card = getJobCardByRepairId(repair.id) || getLatestJobCard();
+                      const stages = getRepairProgressStages(repair, !!contactedRepairs[repair.id]);
+                      const wfStatus: TechnicianWorkflowStatus =
+                        repair.technicianWorkflowStatus ||
+                        (repair.status === "on_the_way"
+                          ? "on_the_way"
+                          : repair.status === "arrived"
+                          ? "arrived"
+                          : repair.status === "repairing" || repair.status === "repair_in_progress"
+                          ? "repairing"
+                          : repair.status === "verification_pending" || repair.status === "completed"
+                          ? "completed"
+                          : "assigned");
+
+                      return (
+                        <div
+                          key={repair.id}
+                          className="bg-white rounded-xl p-4 border border-slate-200/90 shadow-2xs space-y-3"
+                        >
+                          {/* Farmer & Machine info */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-3">
+                              <span className="text-2xl p-2.5 bg-emerald-50 rounded-xl border border-emerald-100 flex-shrink-0">
+                                {repair.machineIcon || "🚜"}
+                              </span>
+                              <div>
+                                <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-tight">
+                                  {repair.farmerName || "किसान"}
+                                </h3>
+                                <div className="text-xs font-bold text-emerald-800">
+                                  {repair.machineNameHi || "Tractor"}
+                                </div>
+                                <div className="text-[11px] text-slate-500 font-medium flex items-center gap-1.5 flex-wrap mt-0.5">
+                                  <span>📍 {getTechnicianDistanceText(repair)}</span>
+                                  <span>•</span>
+                                  <span>{repair.farmerLocation?.village || "शाहपुर"}, {repair.farmerLocation?.district || "लखनऊ"}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                              {repair.statusTextHi || "स्वीकृत"}
                             </span>
-                            <div>
-                              <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-tight">
-                                {repair.farmerName || "किसान"}
-                              </h3>
-                              <div className="text-xs font-bold text-emerald-800">
-                                {repair.machineNameHi || "Tractor"}
-                              </div>
-                              <div className="text-[11px] text-slate-500 font-medium flex items-center gap-1.5 flex-wrap mt-0.5">
-                                <span>📍 {getTechnicianDistanceText(repair)}</span>
-                                <span>•</span>
-                                <span>{repair.farmerLocation?.village || "शाहपुर"}, {repair.farmerLocation?.district || "लखनऊ"}</span>
-                              </div>
+                          </div>
+
+                          {/* Problem info */}
+                          <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80 text-xs text-slate-700 space-y-1">
+                            <span className="text-slate-500 font-medium block text-[11px]">समस्या (Problem):</span>
+                            <span className="text-slate-900 font-bold text-xs sm:text-sm">
+                              {repair.problemDescription}
+                            </span>
+                          </div>
+
+                          {/* 5-Stage Stepper Status Progress */}
+                          <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 space-y-2">
+                            <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                              <span>कार्य प्रगति स्थिति</span>
+                              <span className="text-emerald-800 font-extrabold">{repair.statusTextHi}</span>
+                            </div>
+                            <div className="space-y-1.5 pt-1">
+                              {stages.map((st) => (
+                                <div key={st.id} className="flex items-center gap-2.5 text-xs">
+                                  {st.done ? (
+                                    <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs shrink-0">
+                                      ✓
+                                    </span>
+                                  ) : st.current ? (
+                                    <span className="w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center font-bold text-[10px] shrink-0 animate-pulse">
+                                      ●
+                                    </span>
+                                  ) : (
+                                    <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-400 flex items-center justify-center font-bold text-[10px] shrink-0">
+                                      ○
+                                    </span>
+                                  )}
+                                  <span className={st.done ? "font-semibold text-slate-800" : st.current ? "font-bold text-amber-800" : "text-slate-400"}>
+                                    {st.label}
+                                  </span>
+                                </div>
+                              ))}
                             </div>
                           </div>
 
-                          <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                            {repair.statusTextHi || "स्वीकृत"}
-                          </span>
-                        </div>
+                          {/* TECHNICIAN PRIMARY WORKFLOW ACTION (ONE BUTTON AT A TIME) */}
+                          <div className="space-y-2 pt-1">
+                            {wfStatus === "assigned" && (
+                              <button
+                                type="button"
+                                disabled={isUpdatingStatus}
+                                onClick={() => handleStepWorkflowStatus(repair, "on_the_way")}
+                                className="w-full bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 disabled:opacity-50 text-white font-bold text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+                              >
+                                <Navigation className="w-4 h-4 text-white" />
+                                <span>रास्ते में हूँ ➔</span>
+                              </button>
+                            )}
 
-                        {/* Problem info */}
-                        <div className="p-3 bg-slate-50/80 rounded-lg border border-slate-200/80 text-xs text-slate-700 space-y-1">
-                          <span className="text-slate-500 font-medium block text-[11px]">समस्या (Problem):</span>
-                          <span className="text-slate-900 font-bold text-xs sm:text-sm">
-                            {repair.problemDescription}
-                          </span>
-                        </div>
+                            {wfStatus === "on_the_way" && (
+                              <button
+                                type="button"
+                                disabled={isUpdatingStatus}
+                                onClick={() => handleStepWorkflowStatus(repair, "arrived")}
+                                className="w-full bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 disabled:opacity-50 text-white font-bold text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+                              >
+                                <MapPin className="w-4 h-4 text-white" />
+                                <span>पहुँच गया ➔</span>
+                              </button>
+                            )}
 
-                        {/* 5-Stage Stepper Status Progress */}
-                        <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 space-y-2">
-                          <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                            <span>कार्य प्रगति स्थिति</span>
-                            <span className="text-emerald-800 font-extrabold">{repair.statusTextHi}</span>
-                          </div>
-                          <div className="space-y-1.5 pt-1">
-                            {stages.map((st) => (
-                              <div key={st.id} className="flex items-center gap-2.5 text-xs">
-                                {st.done ? (
-                                  <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs shrink-0">
-                                    ✓
-                                  </span>
-                                ) : st.current ? (
-                                  <span className="w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center font-bold text-[10px] shrink-0 animate-pulse">
-                                    ●
-                                  </span>
-                                ) : (
-                                  <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-400 flex items-center justify-center font-bold text-[10px] shrink-0">
-                                    ○
-                                  </span>
-                                )}
-                                <span className={st.done ? "font-semibold text-slate-800" : st.current ? "font-bold text-amber-800" : "text-slate-400"}>
-                                  {st.label}
-                                </span>
+                            {wfStatus === "arrived" && (
+                              <button
+                                type="button"
+                                disabled={isUpdatingStatus}
+                                onClick={() => handleStepWorkflowStatus(repair, "repairing")}
+                                className="w-full bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 disabled:opacity-50 text-white font-bold text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+                              >
+                                <Wrench className="w-4 h-4 text-white" />
+                                <span>मरम्मत शुरू करें ➔</span>
+                              </button>
+                            )}
+
+                            {wfStatus === "repairing" && (
+                              <button
+                                type="button"
+                                disabled={isUpdatingStatus}
+                                onClick={() => handleStepWorkflowStatus(repair, "completed")}
+                                className="w-full bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 disabled:opacity-50 text-white font-bold text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+                              >
+                                <CheckCircle2 className="w-4 h-4 text-white" />
+                                <span>मरम्मत पूरी हुई ✓</span>
+                              </button>
+                            )}
+
+                            {(wfStatus === "completed" || repair.status === "verification_pending") && (
+                              <div className="w-full p-3 bg-amber-50 border border-amber-300 rounded-xl text-center space-y-1">
+                                <div className="text-xs font-bold text-amber-950 flex items-center justify-center gap-1.5">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                  <span>मरम्मत पूरी हो चुकी है</span>
+                                </div>
+                                <p className="text-[11px] text-amber-800 font-medium">
+                                  किसान द्वारा मशीन की जाँच की प्रतीक्षा है (Verification Pending)
+                                </p>
                               </div>
-                            ))}
-                          </div>
-                        </div>
+                            )}
 
-                        {/* Required Action Buttons */}
-                        <div className="space-y-2 pt-1">
-                          <div className="grid grid-cols-2 gap-2">
-                            {/* 📍 रास्ता देखें */}
+                            {/* Secondary Actions: Route & Call */}
+                            <div className="grid grid-cols-2 gap-2 pt-1">
+                              {/* 📍 रास्ता देखें */}
+                              <button
+                                type="button"
+                                onClick={() => handleViewRoute(repair)}
+                                className="bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 font-bold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-slate-200 shadow-2xs"
+                              >
+                                <Navigation className="w-3.5 h-3.5 text-emerald-700" />
+                                <span>📍 रास्ता देखें</span>
+                              </button>
+
+                              {/* 📞 किसान से संपर्क करें */}
+                              <a
+                                href={`tel:${repair.farmerPhone || "9876543210"}`}
+                                onClick={() => handleCallFarmer(repair)}
+                                className="bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 text-emerald-900 font-bold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-emerald-200 shadow-2xs text-center"
+                              >
+                                <Phone className="w-3.5 h-3.5 text-emerald-700" />
+                                <span>📞 संपर्क</span>
+                              </a>
+                            </div>
+
+                            {/* View Job card details */}
                             <button
                               type="button"
-                              onClick={() => handleViewRoute(repair)}
-                              className="bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 font-bold text-xs py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-slate-200 shadow-2xs"
+                              onClick={() => {
+                                setSelectedJobCardId(card ? card.jobId : repair.id);
+                              }}
+                              className="w-full text-center text-xs text-slate-500 hover:text-emerald-700 font-medium py-1 cursor-pointer"
                             >
-                              <Navigation className="w-4 h-4 text-emerald-700" />
-                              <span>📍 रास्ता देखें</span>
+                              विस्तृत जॉब कार्ड / पार्ट्स देखें ➔
                             </button>
-
-                            {/* 📞 किसान से संपर्क करें */}
-                            <a
-                              href={`tel:${repair.farmerPhone || "9876543210"}`}
-                              onClick={() => handleCallFarmer(repair)}
-                              className="bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 text-emerald-900 font-bold text-xs py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-emerald-200 shadow-2xs text-center"
-                            >
-                              <Phone className="w-4 h-4 text-emerald-700" />
-                              <span>📞 किसान से संपर्क</span>
-                            </a>
                           </div>
-
-                          {/* मरम्मत शुरू करें button (if not yet repairing) */}
-                          {!isRepairing && repair.status !== "verification_pending" && (
-                            <button
-                              type="button"
-                              onClick={() => handleStartRepair(repair)}
-                              className="w-full bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white font-bold text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-2xs"
-                            >
-                              <Wrench className="w-4 h-4 text-white" />
-                              <span>मरम्मत शुरू करें ➔</span>
-                            </button>
-                          )}
-
-                          {/* मरम्मत पूरी करें button */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCompletingRepairId(repair.id);
-                              setIsCompletingModalOpen(true);
-                            }}
-                            className={`w-full ${
-                              isRepairing
-                                ? "bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white"
-                                : "bg-slate-800 hover:bg-slate-900 active:bg-slate-950 text-white"
-                            } font-bold text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-2xs`}
-                          >
-                            <CheckCircle2 className="w-4 h-4 text-white" />
-                            <span>मरम्मत पूरी करें ✓</span>
-                          </button>
-
-                          {/* View Job card details */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedJobCardId(card ? card.jobId : repair.id);
-                            }}
-                            className="w-full text-center text-xs text-slate-500 hover:text-emerald-700 font-medium py-1 cursor-pointer"
-                          >
-                            विस्तृत जॉब कार्ड / पार्ट्स देखें ➔
-                          </button>
                         </div>
-                      </div>
-                    );
-                  })
+                      );
+                    })}
+                  </>
                 )}
               </div>
             ) : (
@@ -1832,8 +2251,7 @@ export default function TechnicianDashboard({
             type="button"
             id="technician-nav-home-btn"
             onClick={() => {
-              setActiveTab("home");
-              setSelectedJobCardId(null);
+              switchTab("home");
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
             className={`py-1.5 px-1 flex flex-col items-center justify-center rounded-md transition-colors cursor-pointer ${
@@ -1851,8 +2269,7 @@ export default function TechnicianDashboard({
             type="button"
             id="technician-nav-requests-btn"
             onClick={() => {
-              setActiveTab("requests");
-              setSelectedJobCardId(null);
+              switchTab("requests");
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
             className={`py-1.5 px-1 flex flex-col items-center justify-center rounded-md transition-colors cursor-pointer relative ${
@@ -1877,8 +2294,7 @@ export default function TechnicianDashboard({
             type="button"
             id="technician-nav-repairs-btn"
             onClick={() => {
-              setActiveTab("repairs");
-              setSelectedJobCardId(null);
+              switchTab("repairs");
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
             className={`py-1.5 px-1 flex flex-col items-center justify-center rounded-md transition-colors cursor-pointer relative ${
@@ -1903,8 +2319,7 @@ export default function TechnicianDashboard({
             type="button"
             id="technician-nav-profile-btn"
             onClick={() => {
-              setActiveTab("profile");
-              setSelectedJobCardId(null);
+              switchTab("profile");
               window.scrollTo({ top: 0, behavior: "smooth" });
             }}
             className={`py-1.5 px-1 flex flex-col items-center justify-center rounded-md transition-colors cursor-pointer ${
@@ -1930,7 +2345,7 @@ export default function TechnicianDashboard({
               </div>
               <button
                 type="button"
-                onClick={() => setViewingRequest(null)}
+                onClick={handleTechBack}
                 className="text-slate-400 hover:text-slate-600 p-1 rounded-md hover:bg-slate-100 cursor-pointer transition-colors"
               >
                 <X className="w-5 h-5" />
@@ -2104,6 +2519,25 @@ export default function TechnicianDashboard({
                   अनुरोध स्वीकार करें
                 </button>
               </div>
+
+              {/* Optional: View Digital Job Card if already created */}
+              {getJobCardByRepairId(viewingRequest.id) && (
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const card = getJobCardByRepairId(viewingRequest.id);
+                      if (card) {
+                        handleOpenJobCard(card.jobId, "viewing_request");
+                      }
+                    }}
+                    className="w-full py-2 px-3 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-slate-300"
+                  >
+                    <ClipboardList className="w-4 h-4 text-emerald-700" />
+                    <span>डिजिटल जॉब कार्ड देखें</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
