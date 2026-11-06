@@ -1,576 +1,450 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { createClient, type User } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
 
-/**
- * /api/auth/otp — Backend Authentication & OTP API
- *
- * Implements:
- * 1. Strict Backend Role Verification (FARMER vs TECHNICIAN only).
- * 2. Arbitrary role rejection with HTTP 400.
- * 3. Existing user profile resolution from backend source of truth.
- * 4. Account profile creation & persistence (Name, Phone, Address, Role, Skills, Timestamps).
- * 5. Role-based token generation and session storage for backend API protection.
- * 6. Farmer-friendly localized error handling.
- */
+export const runtime = "nodejs";
 
-export type UserRole = "farmer" | "technician";
+const STATE_COOKIE = "yantriq_msg91_email_otp";
+const OTP_TTL_SECONDS = 15 * 60;
+const RESEND_SECONDS = 10;
+const MSG91_WIDGET_API = "https://control.msg91.com/api/v5/widget";
 
-export interface ServerAddress {
-  villageOrCity: string;
-  district: string;
-  state: string;
-  pinCode?: string;
+interface Msg91Diagnostic {
+  httpStatus: number;
+  type: string;
+  code: string;
+  message: string;
+  body: string;
 }
 
-export interface ServerUserProfile {
-  id: string;
-  phone: string;
-  role: UserRole;
-  name: string;
-  nameHi: string;
-  address?: ServerAddress;
-  villageOrArea?: string;
-  skills?: string[];
-  serviceArea?: string;
-  available?: boolean;
-  machinesLinked?: string[];
-  location?: {
-    latitude: number;
-    longitude: number;
-    village?: string;
-    district?: string;
-    state?: string;
-  };
-  createdAt: string;
-  updatedAt: string;
+class Msg91RequestError extends Error {
+  constructor(readonly diagnostic: Msg91Diagnostic) {
+    super("MSG91 rejected the request.");
+  }
 }
 
-interface ServerOtpRecord {
-  phone: string;
-  role: UserRole;
-  otp: string;
+class LocalAuthError extends Error {
+  constructor(readonly code: string, message: string, readonly provider?: Msg91Diagnostic) {
+    super(message);
+  }
+}
+
+interface OtpState {
+  email: string;
+  reqId: string;
   expiresAt: number;
-  attemptsLeft: number;
+  lastSentAt: number;
 }
 
-// Global in-memory storage across Next.js API calls in runtime
-const globalStore = global as unknown as {
-  __agripulse_active_otps?: Map<string, ServerOtpRecord>;
-  __agripulse_users?: Map<string, ServerUserProfile>;
-  __agripulse_sessions?: Map<string, ServerUserProfile>;
-};
-
-if (!globalStore.__agripulse_active_otps) {
-  globalStore.__agripulse_active_otps = new Map<string, ServerOtpRecord>();
-}
-if (!globalStore.__agripulse_users) {
-  globalStore.__agripulse_users = new Map<string, ServerUserProfile>();
-}
-const users = globalStore.__agripulse_users;
-users.delete("9876543210_technician");
-
-  // 1. Seed Farmer account: Pawan Gupta (9876543210)
-  const seedFarmer: ServerUserProfile = {
-    id: "farmer-001",
-    phone: "9876543210",
-    role: "farmer",
-    name: "Pawan Gupta",
-    nameHi: "पवन गुप्ता (Pawan Gupta)",
-    address: {
-      villageOrCity: "शाहपुर",
-      district: "लखनऊ",
-      state: "उत्तर प्रदेश",
-      pinCode: "226001",
-    },
-    villageOrArea: "शाहपुर, लखनऊ",
-    machinesLinked: ["tractor", "power_tiller", "sprayer"],
-    location: {
-      latitude: 26.8467,
-      longitude: 80.9462,
-      village: "शाहपुर",
-      district: "लखनऊ",
-      state: "उत्तर प्रदेश",
-    },
-    createdAt: "2026-09-01T00:00:00.000Z",
-    updatedAt: "2026-09-01T00:00:00.000Z",
+interface ProfileInput {
+  name?: unknown;
+  phone?: unknown;
+  address?: {
+    villageOrCity?: unknown;
+    district?: unknown;
+    state?: unknown;
+    pinCode?: unknown;
   };
-  users.set("9876543210_farmer", seedFarmer);
-  users.set("farmer-001", seedFarmer);
-  users.set("9876543210", seedFarmer);
-
-  // 2. Seed Technician 1: Ramesh Kumar (9876543211 - Sprayer & Power Tiller Specialist)
-  const seedRameshTech: ServerUserProfile = {
-    id: "tech-001",
-    phone: "9876543211",
-    role: "technician",
-    name: "Ramesh Kumar",
-    nameHi: "रमेश कुमार",
-    address: {
-      villageOrCity: "चिनहट",
-      district: "लखनऊ",
-      state: "उत्तर प्रदेश",
-      pinCode: "226028",
-    },
-    villageOrArea: "लखनऊ पूर्व व चिनहट क्षेत्र (12 किमी)",
-    skills: ["Sprayer", "Power Tiller", "Engine", "Mechanical"],
-    serviceArea: "लखनऊ पूर्व व चिनहट क्षेत्र (12 किमी)",
-    available: true,
-    location: {
-      latitude: 26.8628,
-      longitude: 80.9623,
-      village: "चिनहट",
-    },
-    createdAt: "2026-09-01T00:00:00.000Z",
-    updatedAt: "2026-09-01T00:00:00.000Z",
-  };
-  users.set("9876543211_technician", seedRameshTech);
-  users.set("tech-001", seedRameshTech);
-  users.set("9876543211", seedRameshTech);
-
-  // 3. Seed Technician 2: Suresh Patil (9856789012 - Tractor Specialist)
-  const seedSureshTech: ServerUserProfile = {
-    id: "tech-007",
-    phone: "9856789012",
-    role: "technician",
-    name: "Suresh Patil",
-    nameHi: "सुरेश पाटिल",
-    address: {
-      villageOrCity: "बीकेटी",
-      district: "लखनऊ",
-      state: "उत्तर प्रदेश",
-      pinCode: "226201",
-    },
-    villageOrArea: "लखनऊ ग्रामीण व बीकेटी क्षेत्र (15 किमी)",
-    skills: ["Tractor", "Rotavator", "Engine", "Mechanical", "Hydraulic"],
-    serviceArea: "लखनऊ ग्रामीण व बीकेटी क्षेत्र (15 किमी)",
-    available: true,
-    location: {
-      latitude: 26.8789,
-      longitude: 80.9784,
-      village: "बीकेटी",
-    },
-    createdAt: "2026-09-01T00:00:00.000Z",
-    updatedAt: "2026-09-01T00:00:00.000Z",
-  };
-  users.set("9856789012_technician", seedSureshTech);
-  users.set("tech-007", seedSureshTech);
-  users.set("9856789012", seedSureshTech);
-
-  // 4. Seed Technician 3: Mahesh Verma (9834567890 - Pump & Irrigation Specialist)
-  const seedMaheshTech: ServerUserProfile = {
-    id: "tech-005",
-    phone: "9834567890",
-    role: "technician",
-    name: "Mahesh Verma",
-    nameHi: "महेश वर्मा",
-    address: {
-      villageOrCity: "सरोजिनी नगर",
-      district: "लखनऊ",
-      state: "उत्तर प्रदेश",
-      pinCode: "226008",
-    },
-    villageOrArea: "सरोजिनी नगर व मोहनलालगंज (15 किमी)",
-    skills: ["Water Pump", "Sprayer", "Motor", "Engine", "Electrical"],
-    serviceArea: "सरोजिनी नगर व मोहनलालगंज (15 किमी)",
-    available: true,
-    location: {
-      latitude: 26.7991,
-      longitude: 80.8986,
-      village: "सरोजिनी नगर",
-    },
-    createdAt: "2026-09-01T00:00:00.000Z",
-    updatedAt: "2026-09-01T00:00:00.000Z",
-  };
-  users.set("9834567890_technician", seedMaheshTech);
-  users.set("tech-005", seedMaheshTech);
-  users.set("9834567890", seedMaheshTech);
-
-  // 5. Seed Technician 4: Mohan Singh (9812345678)
-  const seedMohanTech: ServerUserProfile = {
-    id: "tech-003",
-    phone: "9812345678",
-    role: "technician",
-    name: "Mohan Singh",
-    nameHi: "मोहन सिंह",
-    address: {
-      villageOrCity: "मलिहाबाद",
-      district: "लखनऊ",
-      state: "उत्तर प्रदेश",
-      pinCode: "226102",
-    },
-    villageOrArea: "मलिहाबाद व काकोरी क्षेत्र (15 किमी)",
-    skills: ["Tractor", "Power Tiller", "Engine", "Hydraulic", "Harvester"],
-    serviceArea: "मलिहाबाद व काकोरी क्षेत्र (15 किमी)",
-    available: false,
-    location: {
-      latitude: 26.8587,
-      longitude: 80.9222,
-      village: "मलिहाबाद",
-    },
-    createdAt: "2026-09-01T00:00:00.000Z",
-    updatedAt: "2026-09-01T00:00:00.000Z",
-  };
-  users.set("9812345678_technician", seedMohanTech);
-  users.set("tech-003", seedMohanTech);
-  users.set("9812345678", seedMohanTech);
-
-  globalStore.__agripulse_users = users;
-if (!globalStore.__agripulse_sessions) {
-  globalStore.__agripulse_sessions = new Map<string, ServerUserProfile>();
 }
 
-const activeOtps = globalStore.__agripulse_active_otps!;
-const serverUsers = globalStore.__agripulse_users!;
-const serverSessions = globalStore.__agripulse_sessions!;
+function normalizeEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const email = value.trim().toLowerCase();
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
 
-/**
- * Find user by phone and optional role
- */
-function findServerUser(phone: string, role?: string | null): ServerUserProfile | undefined {
-  const cPhone = cleanPhone(phone);
-  if (role) {
-    const roleLower = role.trim().toLowerCase();
-    const compound = `${cPhone}_${roleLower}`;
-    if (serverUsers.has(compound)) {
-      return serverUsers.get(compound);
+function requiredConfig() {
+  const authKey = process.env.MSG91_AUTH_KEY;
+  const widgetId = process.env.MSG91_WIDGET_ID;
+  if (!authKey || !widgetId) {
+    throw new Error("MSG91 authentication configuration is missing.");
+  }
+  return { authKey, widgetId };
+}
+
+function requiredSupabaseConfig(config: ReturnType<typeof requiredConfig>) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !publishableKey || !serviceRoleKey) {
+    throw new Error("Supabase authentication configuration is missing.");
+  }
+  return { ...config, url, publishableKey, serviceRoleKey };
+}
+
+function sanitizeDiagnosticText(value: unknown, authKey: string): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replaceAll(authKey, "[redacted]")
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,})?\b/g, "[redacted-token]")
+    .replace(/\bsb_(?:secret|publishable)_[A-Za-z0-9_-]+\b/g, "[redacted-key]")
+    .replace(/["']?(access[-_ ]?token|token[-_ ]?auth|auth[-_ ]?token|token|authkey|authorization|cookie|otp|reqid|req_id|api[-_ ]?key|secret)["']?\s*[:=]\s*["']?[^,"'\s}]+["']?/gi, "$1=[redacted]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/\b[a-f0-9]{24,}\b/gi, "[redacted-id]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\b\d{4,8}\b/g, "[redacted-number]")
+    .slice(0, 500);
+}
+
+function makeMsg91Diagnostic(
+  httpStatus: number,
+  data: Record<string, unknown> | null,
+  rawBody: string,
+  authKey: string,
+  redactPossibleReqId = false
+): Msg91Diagnostic {
+  const type = typeof data?.type === "string" ? data.type.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32) : "unknown";
+  const code = typeof data?.code === "string" || typeof data?.code === "number"
+    ? String(data.code).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32)
+    : "unknown";
+  const rawMessage = data?.error ?? data?.description ?? data?.message;
+  const message = redactPossibleReqId && typeof rawMessage === "string"
+    ? "Successful Widget message omitted because it may contain reqId."
+    : sanitizeDiagnosticText(rawMessage, authKey) || "No provider message returned.";
+  // Include only non-secret diagnostic fields; do not echo reqId, OTP, tokens, or arbitrary fields.
+  const body = data
+    ? JSON.stringify({
+        ...(type !== "unknown" ? { type } : {}),
+        ...(code !== "unknown" ? { code } : {}),
+        ...(typeof data.hasError === "boolean" ? { hasError: data.hasError } : {}),
+        ...(rawMessage !== undefined ? { message } : {}),
+      })
+    : JSON.stringify({ response: sanitizeDiagnosticText(rawBody, authKey) || "Unreadable or empty response body." });
+  return { httpStatus, type, code, message, body: body.slice(0, 1200) };
+}
+
+function signState(state: OtpState, authKey: string): string {
+  const payload = Buffer.from(JSON.stringify(state)).toString("base64url");
+  const signature = createHmac("sha256", authKey).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function readState(req: NextRequest, authKey: string): OtpState | null {
+  const value = req.cookies.get(STATE_COOKIE)?.value;
+  if (!value) return null;
+  const separator = value.lastIndexOf(".");
+  if (separator < 1) return null;
+  const payload = value.slice(0, separator);
+  const suppliedSignature = Buffer.from(value.slice(separator + 1));
+  const expectedSignature = Buffer.from(createHmac("sha256", authKey).update(payload).digest("base64url"));
+  if (suppliedSignature.length !== expectedSignature.length || !timingSafeEqual(suppliedSignature, expectedSignature)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as OtpState;
+    if (
+      !normalizeEmail(parsed.email) ||
+      typeof parsed.reqId !== "string" ||
+      parsed.reqId.length < 1 ||
+      parsed.reqId.length > 2048 ||
+      !Number.isFinite(parsed.expiresAt) ||
+      !Number.isFinite(parsed.lastSentAt) ||
+      parsed.expiresAt <= Date.now()
+    ) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function msg91Post(
+  path: string,
+  authKey: string,
+  body: Record<string, string>,
+  authKeyPlacement: "header" | "body" = "header"
+): Promise<Record<string, unknown> & { _httpStatus: number }> {
+  const requestBody = authKeyPlacement === "body" ? { ...body, authkey: authKey } : body;
+  const response = await fetch(`${MSG91_WIDGET_API}/${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(authKeyPlacement === "header" ? { authkey: authKey } : {}),
+    },
+    body: JSON.stringify(requestBody),
+    cache: "no-store",
+    signal: AbortSignal.timeout(12000),
+  });
+  const rawBody = await response.text();
+  let result: unknown;
+  try {
+    result = JSON.parse(rawBody);
+  } catch {
+    throw new Msg91RequestError(makeMsg91Diagnostic(response.status, null, rawBody, authKey));
+  }
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Msg91RequestError(makeMsg91Diagnostic(response.status, null, rawBody, authKey));
+  }
+  const data = result as Record<string, unknown>;
+  if (!response.ok || data.type !== "success" || data.hasError === true || data.code === 201 || data.code === "201") {
+    throw new Msg91RequestError(makeMsg91Diagnostic(response.status, data, rawBody, authKey));
+  }
+  return { ...data, _httpStatus: response.status };
+}
+
+function setStateCookie(response: NextResponse, value: string, maxAge: number) {
+  response.cookies.set(STATE_COOKIE, value, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge,
+  });
+}
+
+function clearStateCookie(response: NextResponse) {
+  response.cookies.set(STATE_COOKIE, "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+}
+
+function createAdminClient(url: string, serviceRoleKey: string) {
+  return createClient(url, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+  });
+}
+
+async function findUserByEmail(admin: ReturnType<typeof createAdminClient>, email: string): Promise<User | null> {
+  for (let page = 1; page <= 50; page += 1) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) throw new Error("Supabase user lookup failed.");
+    const match = data.users.find((candidate) => candidate.email?.toLowerCase() === email);
+    if (match) return match;
+    if (data.users.length < 1000) return null;
+  }
+  throw new Error("Supabase user lookup exceeded its safety bound.");
+}
+
+async function mapAuthenticatedProfile(
+  req: NextRequest,
+  config: ReturnType<typeof requiredSupabaseConfig>,
+  email: string,
+  isSignup: boolean,
+  registration: ProfileInput | undefined,
+  cookieChanges: Array<{ name: string; value: string; options?: any }>
+) {
+  const admin = createAdminClient(config.url, config.serviceRoleKey);
+  let user = await findUserByEmail(admin, email);
+  let created = false;
+  const safeName = typeof registration?.name === "string" ? registration.name.trim().slice(0, 120) : "";
+  const rawPhone = typeof registration?.phone === "string" ? registration.phone.replace(/\D/g, "") : "";
+  const phone = rawPhone.length === 12 && rawPhone.startsWith("91") ? rawPhone.slice(2) : rawPhone;
+  if (phone && !/^[6-9]\d{9}$/.test(phone)) throw new Error("Invalid profile details.");
+  const address = registration?.address;
+  const profileFields = {
+    full_name: safeName || null,
+    phone: phone || null,
+    village_city: typeof address?.villageOrCity === "string" ? address.villageOrCity.trim().slice(0, 120) || null : null,
+    district: typeof address?.district === "string" ? address.district.trim().slice(0, 120) || null : null,
+    state: typeof address?.state === "string" ? address.state.trim().slice(0, 120) || null : null,
+    pin_code: typeof address?.pinCode === "string" ? address.pinCode.replace(/\D/g, "").slice(0, 6) || null : null,
+  };
+
+  if (!user) {
+    if (!isSignup || !safeName || !phone || !profileFields.village_city || !profileFields.district || !profileFields.state || !/^\d{6}$/.test(profileFields.pin_code || "")) {
+      throw new Error("Complete farmer registration details are required.");
     }
-    // Search values strictly by role and phone
-    for (const u of serverUsers.values()) {
-      if (cleanPhone(u.phone) === cPhone && u.role.toLowerCase() === roleLower) {
-        return u;
-      }
-    }
-    // If a role was specified and not found, strictly return undefined!
-    // Do NOT fall back to a user of a different role.
-    return undefined;
-  }
-
-  // Only if no role was specified, search by phone
-  for (const u of serverUsers.values()) {
-    if (cleanPhone(u.phone) === cPhone) {
-      return u;
+    const { data, error } = await admin.auth.admin.createUser({
+      email,
+      email_confirm: true,
+      user_metadata: { full_name: profileFields.full_name, phone: profileFields.phone },
+    });
+    if (error || !data.user) {
+      user = await findUserByEmail(admin, email);
+      if (!user) throw new Error("Supabase user creation failed.");
+    } else {
+      user = data.user;
+      created = true;
     }
   }
-
-  if (serverUsers.has(cPhone)) {
-    return serverUsers.get(cPhone);
+  if (!user.email_confirmed_at) {
+    const { data, error } = await admin.auth.admin.updateUserById(user.id, { email_confirm: true });
+    if (error || !data.user) throw new Error("Supabase email confirmation failed.");
+    user = data.user;
   }
 
-  return undefined;
-}
-
-/**
- * Persist user cleanly across compound key, ID, and phone index
- */
-function saveServerUser(user: ServerUserProfile): void {
-  const cPhone = cleanPhone(user.phone);
-  const compound = `${cPhone}_${user.role.toLowerCase()}`;
-  serverUsers.set(compound, user);
-  serverUsers.set(user.id, user);
-  serverUsers.set(`${user.role.toLowerCase()}_${cPhone}`, user);
-  serverUsers.set(cPhone, user);
-}
-
-function cleanPhone(raw: string): string {
-  const digits = (raw || "").replace(/\D/g, "");
-  if (digits.length === 12 && digits.startsWith("91")) {
-    return digits.slice(2);
+  const { data: existingProfile, error: profileReadError } = await admin
+    .from("profiles")
+    .select("id, role, full_name, phone, village_city, district, state, pin_code")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (profileReadError) throw new Error("Supabase profile lookup failed.");
+  if (created) {
+    const { error } = await admin.from("profiles").upsert(
+      { id: user.id, role: "farmer", ...profileFields },
+      { onConflict: "id" }
+    );
+    if (error) throw new Error("Supabase profile creation failed.");
   }
-  return digits;
-}
 
-function isValidIndianPhone(phone: string): boolean {
-  return /^[6-9]\d{9}$/.test(phone);
-}
+  const { data: linkData, error: linkError } = await admin.auth.admin.generateLink({ type: "magiclink", email });
+  const tokenHash = linkData?.properties?.hashed_token;
+  if (linkError || !tokenHash) throw new Error("Supabase sign-in token generation failed.");
 
-/**
- * Strict role validator: only allows FARMER or TECHNICIAN (case-insensitive).
- * Blocks arbitrary/malicious roles.
- */
-function normalizeAndValidateRole(rawRole: any): UserRole | null {
-  if (typeof rawRole !== "string") return null;
-  const lower = rawRole.trim().toLowerCase();
-  if (lower === "farmer") return "farmer";
-  if (lower === "technician") return "technician";
-  return null;
+  const sessionClient = createServerClient(config.url, config.publishableKey, {
+    cookies: {
+      getAll() { return req.cookies.getAll(); },
+      setAll(cookiesToSet) { cookieChanges.push(...cookiesToSet); },
+    },
+  });
+  const { data: authData, error: sessionError } = await sessionClient.auth.verifyOtp({
+    token_hash: tokenHash,
+    type: "magiclink",
+  });
+  if (sessionError || !authData.session || !authData.user || authData.user.id !== user.id) {
+    throw new Error("Supabase session exchange failed.");
+  }
+
+  const { data: profile, error: sessionProfileError } = await sessionClient
+    .from("profiles")
+    .select("id, role, full_name, phone, village_city, district, state, pin_code")
+    .eq("id", authData.user.id)
+    .single();
+  if (sessionProfileError || !profile) throw new Error("Authenticated profile lookup failed.");
+
+  const role = profile.role === "technician" ? "technician" : "farmer";
+  const name = profile.full_name || email;
+  const userProfile = {
+    id: profile.id,
+    email: authData.user.email || email,
+    phone: profile.phone || "",
+    role,
+    name,
+    nameHi: name,
+    isNewUser: created,
+    address: {
+      villageOrCity: profile.village_city || "",
+      district: profile.district || "",
+      state: profile.state || "",
+      pinCode: profile.pin_code || undefined,
+    },
+    villageOrArea: [profile.village_city, profile.district].filter(Boolean).join(", "),
+  };
+  return {
+    token: "",
+    user: userProfile,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date((authData.session.expires_at || Math.floor(Date.now() / 1000 + 3600)) * 1000).toISOString(),
+    isNewUser: created,
+    requestedSignup: isSignup,
+  };
 }
 
 export async function POST(req: NextRequest) {
+  const origin = req.headers.get("origin");
+  if (origin && origin !== new URL(req.url).origin) {
+    return NextResponse.json({ success: false, error: "forbidden" }, { status: 403 });
+  }
+
+  let config: ReturnType<typeof requiredConfig>;
+  try {
+    config = requiredConfig();
+  } catch {
+    return NextResponse.json({ success: false, error: "auth_not_configured" }, { status: 503 });
+  }
+
   try {
     const body = await req.json();
-    const {
-      action,
-      phone: rawPhone,
-      role: rawRole,
-      otp: enteredOtp,
-      registrationDetails,
-    } = body;
+    const action = body?.action;
 
-    const phone = cleanPhone(rawPhone);
-
-    // 1. Phone Validation
-    if (!isValidIndianPhone(phone)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "invalid_phone",
-          messageHi: "कृपया मान्य 10 अंकों का मोबाइल नंबर दर्ज करें (6-9 से शुरू होने वाला)।",
-          messageEn: "Please enter a valid 10-digit mobile number.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // 2. Strict Role Validation
-    const validatedRole = normalizeAndValidateRole(rawRole);
-    if (!validatedRole) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "invalid_role",
-          messageHi: "अमान्य खाता प्रकार। केवल 'किसान' या 'टेक्नीशियन' ही अनुमत हैं।",
-          messageEn: "Invalid role specified. Only 'farmer' or 'technician' is allowed.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const otpKey = `${phone}`;
-
-    // ─── ACTION: SEND OTP ──────────────────────────────────────────
     if (action === "send") {
-      const otpCode = "123456";
-      const expiresInSeconds = 300; // 5 minutes
-      const expiresAt = Date.now() + expiresInSeconds * 1000;
-
-      activeOtps.set(otpKey, {
-        phone,
-        role: validatedRole,
-        otp: otpCode,
-        expiresAt,
-        attemptsLeft: 5,
-      });
-
-      const existingUser = findServerUser(phone, validatedRole);
-      const isExistingUser = !!existingUser;
-
-      return NextResponse.json({
+      const email = normalizeEmail(body?.email);
+      if (!email) return NextResponse.json({ success: false, error: "invalid_email" }, { status: 400 });
+      const response = await msg91Post("sendOtp", config.authKey, { widgetId: config.widgetId, identifier: email });
+      const reqId = typeof response.message === "string" ? response.message : typeof response.reqId === "string" ? response.reqId : "";
+      if (!reqId || reqId.length > 2048) {
+        const diagnostic = makeMsg91Diagnostic(
+          Number(response._httpStatus) || 0,
+          response,
+          JSON.stringify(response),
+          config.authKey,
+          true
+        );
+        throw new LocalAuthError("reqid_missing", "The successful MSG91 response did not include a usable reqId.", diagnostic);
+      }
+      const state: OtpState = { email, reqId, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, lastSentAt: Date.now() };
+      const result = NextResponse.json({
         success: true,
-        phone,
-        role: existingUser ? existingUser.role : validatedRole,
-        isExistingUser,
-        expiresInSeconds,
-        messageHi: `6 अंकों का OTP आपके मोबाइल (+91 ${phone.slice(0, 5)} ${phone.slice(5)}) पर भेज दिया गया है।`,
-        messageEn: `A 6-digit OTP has been sent to +91 ${phone}.`,
+        expiresInSeconds: OTP_TTL_SECONDS,
+        resendAfterSeconds: RESEND_SECONDS,
+        provider: { httpStatus: response._httpStatus, type: response.type },
       });
+      setStateCookie(result, signState(state, config.authKey), OTP_TTL_SECONDS);
+      return result;
     }
 
-    // ─── ACTION: VERIFY OTP ────────────────────────────────────────
+    if (action === "resend") {
+      const state = readState(req, config.authKey);
+      if (!state) return NextResponse.json({ success: false, error: "otp_expired" }, { status: 400 });
+      const waitSeconds = Math.max(0, Math.ceil((state.lastSentAt + RESEND_SECONDS * 1000 - Date.now()) / 1000));
+      if (waitSeconds > 0) return NextResponse.json({ success: false, error: "resend_too_soon", retryAfterSeconds: waitSeconds }, { status: 429 });
+      await msg91Post("retryOtp", config.authKey, { widgetId: config.widgetId, reqId: state.reqId });
+      const updated = { ...state, lastSentAt: Date.now() };
+      const result = NextResponse.json({ success: true, resendAfterSeconds: RESEND_SECONDS, expiresInSeconds: Math.max(0, Math.floor((state.expiresAt - Date.now()) / 1000)) });
+      setStateCookie(result, signState(updated, config.authKey), Math.max(1, Math.floor((state.expiresAt - Date.now()) / 1000)));
+      return result;
+    }
+
     if (action === "verify") {
-      const cleanOtp = (enteredOtp || "").replace(/\D/g, "");
+      const state = readState(req, config.authKey);
+      if (!state) return NextResponse.json({ success: false, error: "otp_expired" }, { status: 400 });
+      const otp = typeof body?.otp === "string" ? body.otp : "";
+      if (!/^\d{4}$/.test(otp)) return NextResponse.json({ success: false, error: "invalid_otp" }, { status: 400 });
 
-      if (cleanOtp.length !== 6) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "invalid_format",
-            messageHi: "कृपया 6 अंकों का पूरा OTP दर्ज करें।",
-            messageEn: "Please enter all 6 digits of the OTP.",
-          },
-          { status: 400 }
-        );
+      const verification = await msg91Post("verifyOtp", config.authKey, { widgetId: config.widgetId, reqId: state.reqId, otp });
+      const accessToken = typeof verification.message === "string" ? verification.message : "";
+      if (!accessToken || accessToken.length > 20000) return NextResponse.json({ success: false, error: "otp_verification_failed" }, { status: 401 });
+      const verified = await msg91Post("verifyAccessToken", config.authKey, { "access-token": accessToken }, "body");
+      const verifiedEmail = normalizeEmail(verified.message);
+      if (!verifiedEmail || verifiedEmail !== state.email) {
+        return NextResponse.json({ success: false, error: "verified_email_mismatch" }, { status: 401 });
       }
 
-      let record = activeOtps.get(otpKey);
-
-      // Demo fallback if server restarted
-      if (!record && cleanOtp === "123456") {
-        record = {
-          phone,
-          role: validatedRole,
-          otp: "123456",
-          expiresAt: Date.now() + 300000,
-          attemptsLeft: 5,
-        };
-      }
-
-      if (!record) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "otp_expired",
-            messageHi: "OTP की समय सीमा समाप्त हो गई है। कृपया 'दोबारा भेजें' दबाएं।",
-            messageEn: "OTP has expired. Please request a new OTP.",
-          },
-          { status: 400 }
-        );
-      }
-
-      if (Date.now() > record.expiresAt) {
-        activeOtps.delete(otpKey);
-        return NextResponse.json(
-          {
-            success: false,
-            error: "otp_expired",
-            messageHi: "OTP की समय सीमा समाप्त हो चुकी है। कृपया नया OTP प्राप्त करें।",
-            messageEn: "OTP has expired. Please request a new OTP.",
-          },
-          { status: 400 }
-        );
-      }
-
-      if (record.otp !== cleanOtp) {
-        record.attemptsLeft -= 1;
-        if (record.attemptsLeft <= 0) {
-          activeOtps.delete(otpKey);
-          return NextResponse.json(
-            {
-              success: false,
-              error: "too_many_attempts",
-              messageHi: "गलत OTP के अधिकतम प्रयास हो चुके हैं। कृपया नया OTP मंगाएं।",
-              messageEn: "Too many incorrect attempts. Please request a new OTP.",
-            },
-            { status: 400 }
-          );
-        }
-
-        return NextResponse.json(
-          {
-            success: false,
-            error: "wrong_otp",
-            messageHi: `गलत OTP दर्ज किया गया है! शेष प्रयास: ${record.attemptsLeft}।`,
-            messageEn: `Incorrect OTP. Remaining attempts: ${record.attemptsLeft}.`,
-          },
-          { status: 400 }
-        );
-      }
-
-      // Valid OTP
-      activeOtps.delete(otpKey);
-
-      // ─── BACKEND ROLE VERIFICATION & ACCOUNT RETRIEVAL ──────────────
-      // 1. Look up user by phone and requested role
-      let user = findServerUser(phone, validatedRole);
-      let isNewUser = false;
-
-      if (user) {
-        // EXISTING USER: Backend role & profile is the ABSOLUTE SOURCE OF TRUTH.
-        user.updatedAt = new Date().toISOString();
-        saveServerUser(user);
-      } else {
-        const realName = (registrationDetails?.name || "").trim();
-        if (!realName) {
-          // Returning user login: enforce stored database role to prevent spoofing
-          const existingAnyRole = findServerUser(phone);
-          if (existingAnyRole) {
-            user = existingAnyRole;
-            user.updatedAt = new Date().toISOString();
-            saveServerUser(user);
-          } else {
-            return NextResponse.json(
-              {
-                success: false,
-                error: "user_not_found",
-                messageHi: "यह मोबाइल नंबर पंजीकृत नहीं है। कृपया पहले 'नया रजिस्ट्रेशन' पर जाकर अपना खाता बनाएं।",
-                messageEn: "Mobile number is not registered. Please register first.",
-              },
-              { status: 404 }
-            );
-          }
-        } else {
-          // NEW USER REGISTRATION: Save the user's actual entered Full Name and Address
-          isNewUser = true;
-          const now = new Date().toISOString();
-          const targetRole = validatedRole;
-
-          const addr: ServerAddress = {
-            villageOrCity: (registrationDetails?.address?.villageOrCity || "").trim(),
-            district: (registrationDetails?.address?.district || "").trim(),
-            state: (registrationDetails?.address?.state || "").trim(),
-            pinCode: (registrationDetails?.address?.pinCode || "").trim(),
-          };
-
-          const villageOrArea = [addr.villageOrCity, addr.district, addr.state].filter(Boolean).join(", ");
-
-          user = {
-            id: `${targetRole}-${phone}-${Date.now().toString(36)}`,
-            phone,
-            role: targetRole, // Backend assigns and validates the role strictly
-            name: realName,
-            nameHi: realName,
-            address: addr,
-            villageOrArea,
-            skills:
-              targetRole === "technician"
-                ? registrationDetails?.skills && registrationDetails.skills.length > 0
-                  ? registrationDetails.skills
-                  : ["General Mechanical"]
-                : undefined,
-            serviceArea:
-              targetRole === "technician"
-                ? (registrationDetails?.serviceArea || addr.villageOrCity || "").trim()
-                : undefined,
-            available: targetRole === "technician" ? (registrationDetails?.available ?? true) : undefined,
-            machinesLinked:
-              targetRole === "farmer" ? ["tractor"] : undefined,
-            location: {
-              latitude: 21.1458,
-              longitude: 79.0882,
-              village: addr.villageOrCity,
-              district: addr.district,
-              state: addr.state,
-            },
-            createdAt: now,
-            updatedAt: now,
-          };
-
-          // Persist to server user database
-          saveServerUser(user);
-        }
-      }
-
-      // Generate verified session token
-      const token = `agri-token-${user.role.toLowerCase()}-${phone}-${Date.now()}`;
-      serverSessions.set(token, user);
-
-      const session = {
-        token,
-        user,
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-      };
-
-      return NextResponse.json({
-        success: true,
-        token,
-        session,
-        user,
-        role: user.role, // Backend-verified authoritative role
-        isNewUser,
-        messageHi: `नमस्ते, ${user.nameHi || user.name} 👋 लॉगिन सफल हुआ!`,
-        messageEn: `Welcome, ${user.name}! Login successful.`,
-      });
+      const cookieChanges: Array<{ name: string; value: string; options?: any }> = [];
+      const supabaseConfig = requiredSupabaseConfig(config);
+      const session = await mapAuthenticatedProfile(
+        req,
+        supabaseConfig,
+        verifiedEmail,
+        body?.mode === "register",
+        body?.registrationDetails as ProfileInput | undefined,
+        cookieChanges
+      );
+      const result = NextResponse.json({ success: true, session, isNewUser: session.isNewUser });
+      for (const cookie of cookieChanges) result.cookies.set(cookie.name, cookie.value, cookie.options);
+      clearStateCookie(result);
+      return result;
     }
 
-    return NextResponse.json(
-      {
+    return NextResponse.json({ success: false, error: "invalid_action" }, { status: 400 });
+  } catch (error) {
+    const diagnosticsEnabled = process.env.NODE_ENV !== "production";
+    if (error instanceof Msg91RequestError) {
+      return NextResponse.json({
         success: false,
-        error: "invalid_action",
-        messageHi: "अमान्य अनुरोध।",
-        messageEn: "Invalid action requested.",
-      },
-      { status: 400 }
-    );
-  } catch (err: any) {
-    console.error("OTP API Error:", err);
-    return NextResponse.json(
-      {
-        success: false,
-        error: "server_error",
-        messageHi: "सर्वर त्रुटि: कृपया थोड़ी देर बाद पुनः प्रयास करें।",
-        messageEn: "Server error occurred. Please try again.",
-        details: err?.message,
-      },
-      { status: 500 }
-    );
+        error: "msg91_request_failed",
+        ...(diagnosticsEnabled ? {
+          diagnostics: {
+            local: { code: "msg91_rejected", message: "MSG91 rejected the request; see sanitized provider details." },
+            msg91: error.diagnostic,
+          },
+        } : {}),
+      }, { status: 502 });
+    }
+    const localCode = error instanceof LocalAuthError ? error.code : "authentication_failed";
+    const localMessage = error instanceof Error ? sanitizeDiagnosticText(error.message, config.authKey) : "Unexpected authentication error.";
+    const msg91Summary = error instanceof LocalAuthError ? error.provider : undefined;
+    return NextResponse.json({
+      success: false,
+      error: localCode === "authentication_failed" ? "authentication_failed" : localCode,
+      ...(diagnosticsEnabled ? {
+        diagnostics: {
+          local: { code: localCode, message: localMessage || "No local error message." },
+          ...(msg91Summary ? { msg91: msg91Summary } : {}),
+        },
+      } : {}),
+    }, { status: 502 });
   }
 }

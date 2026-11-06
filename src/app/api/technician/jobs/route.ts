@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAuthenticatedProfile } from "@/lib/auth/server";
 import {
   getServerJobAssignments,
   setServerJobAssignment,
@@ -8,50 +9,19 @@ import {
 
 const serverJobAssignments = getServerJobAssignments();
 
-function verifyTechnicianRole(req: NextRequest): { ok: boolean; response?: NextResponse; tokenRole?: string } {
-  const authHeader = req.headers.get("authorization") || req.headers.get("x-auth-token") || "";
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-
-  if (!token) {
-    return {
-      ok: false,
-      response: NextResponse.json(
-        {
-          success: false,
-          error: "unauthorized",
-          messageHi: "कृपया पहले टेक्नीशियन खाते से लॉगिन करें।",
-          messageEn: "Authentication token missing.",
-        },
-        { status: 401 }
-      ),
-    };
+async function verifyTechnicianRole(): Promise<{ ok: boolean; response?: NextResponse; tokenRole?: string; userId?: string; technicianName?: string }> {
+  const auth = await getAuthenticatedProfile();
+  if (!auth) {
+    return { ok: false, response: NextResponse.json({ success: false, error: "unauthorized", messageHi: "कृपया पहले लॉगिन करें।" }, { status: 401 }) };
   }
-
-  // Token format: agri-token-${role}-${phone}-${timestamp}
-  const parts = token.split("-");
-  const role = parts[2]?.toLowerCase();
-
-  // Strict backend role authorization
-  if (role !== "technician") {
-    return {
-      ok: false,
-      response: NextResponse.json(
-        {
-          success: false,
-          error: "forbidden",
-          messageHi: "पहुंच अस्वीकृत: केवल प्रमाणित टेक्नीशियन ही यह कार्य कर सकते हैं।",
-          messageEn: "Access forbidden: only certified technicians may access this endpoint.",
-        },
-        { status: 403 }
-      ),
-    };
+  if (auth.profile.role !== "technician") {
+    return { ok: false, response: NextResponse.json({ success: false, error: "forbidden", messageHi: "यह सुविधा केवल अधिकृत टेक्नीशियन खातों के लिए है।" }, { status: 403 }) };
   }
-
-  return { ok: true, tokenRole: role };
+  return { ok: true, tokenRole: "technician", userId: auth.user.id, technicianName: auth.profile.full_name || auth.user.email || "प्रमाणित मिस्त्री" };
 }
 
 export async function GET(req: NextRequest) {
-  const auth = verifyTechnicianRole(req);
+  const auth = await verifyTechnicianRole();
   if (!auth.ok) return auth.response!;
 
   return NextResponse.json({
@@ -64,12 +34,14 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = verifyTechnicianRole(req);
+  const auth = await verifyTechnicianRole();
   if (!auth.ok) return auth.response!;
 
   try {
     const body = await req.json();
-    const { action, repairId, technicianId, technicianName, reason, parts, tools, messageToFarmer, notes, finalCost } = body;
+    const { action, repairId, reason, parts, tools, messageToFarmer, notes, finalCost } = body;
+    const technicianId = auth.userId!;
+    const technicianName = auth.technicianName!;
 
     if (!repairId) {
       return NextResponse.json(
@@ -265,4 +237,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-

@@ -446,7 +446,6 @@ export default function TechnicianDashboard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           action: "accept",
@@ -521,7 +520,6 @@ export default function TechnicianDashboard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           action: "contact_farmer",
@@ -544,7 +542,6 @@ export default function TechnicianDashboard({
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${session.token}`,
           },
           body: JSON.stringify({
             action: "start_travel",
@@ -578,7 +575,6 @@ export default function TechnicianDashboard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           action: "start_repair",
@@ -657,7 +653,6 @@ export default function TechnicianDashboard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           action: "reject",
@@ -692,7 +687,6 @@ export default function TechnicianDashboard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           action: "update_parts",
@@ -724,7 +718,6 @@ export default function TechnicianDashboard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           action: "start_travel",
@@ -760,7 +753,6 @@ export default function TechnicianDashboard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           action: "complete",

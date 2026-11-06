@@ -294,20 +294,6 @@ export class HttpBackendProvider implements BackendProvider {
   readonly providerName = "HttpBackendProvider";
   private fallbackMock = new MockBackendProvider(0);
 
-  private getAuthToken(): string {
-    if (typeof window === "undefined") return "agri-token-farmer-9876543210-0";
-    try {
-      const raw = localStorage.getItem("agripulse_auth_session_v1");
-      if (raw) {
-        const sess = JSON.parse(raw);
-        if (sess?.token) return sess.token;
-      }
-    } catch {
-      // safe fallback
-    }
-    return "agri-token-farmer-9876543210-" + Date.now();
-  }
-
   async createRecord(entityType: SyncEntityType, payload: any): Promise<BackendRecordResult> {
     if (typeof window !== "undefined" && typeof fetch === "function" && entityType === "repair_request") {
       try {
@@ -315,7 +301,6 @@ export class HttpBackendProvider implements BackendProvider {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${this.getAuthToken()}`,
           },
           body: JSON.stringify(payload),
         });
@@ -339,7 +324,6 @@ export class HttpBackendProvider implements BackendProvider {
             method: "PATCH",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${this.getAuthToken()}`,
             },
             body: JSON.stringify({ repairId: entityId, ...payload }),
           });
@@ -366,8 +350,7 @@ export class HttpBackendProvider implements BackendProvider {
         const res = await fetch(`/api/farmer/repairs`, {
           method: "GET",
           headers: {
-            Authorization: `Bearer ${this.getAuthToken()}`,
-          },
+            },
         });
         if (res.ok) {
           const json = await res.json();
@@ -395,14 +378,14 @@ export class HttpBackendProvider implements BackendProvider {
             if (op.operationType === "create") {
               const res = await fetch("/api/farmer/repairs", {
                 method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.getAuthToken()}` },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(op.payload),
               });
               if (!res.ok) throw new Error("HTTP error " + res.status);
             } else if (op.operationType === "update") {
               const res = await fetch("/api/farmer/repairs", {
                 method: "PATCH",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.getAuthToken()}` },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ repairId: op.entityId, ...op.payload }),
               });
               if (!res.ok) throw new Error("HTTP error " + res.status);
@@ -439,4 +422,3 @@ export function getBackendProvider(): BackendProvider {
 export function setBackendProvider(provider: BackendProvider): void {
   activeBackendProvider = provider;
 }
-

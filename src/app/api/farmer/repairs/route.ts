@@ -5,6 +5,7 @@ import {
   updateServerRepair,
 } from "@/services/serverRepairStore";
 import { RepairRequest } from "@/types";
+import { getAuthenticatedProfile } from "@/lib/auth/server";
 
 /**
  * /api/farmer/repairs — Comprehensive Farmer Backend API
@@ -18,71 +19,36 @@ import { RepairRequest } from "@/types";
  * while seamlessly supporting authenticated farmer clients.
  */
 
-function verifyFarmerAuth(req: NextRequest): {
+async function verifyFarmerAuth(): Promise<{
   authorized: boolean;
   phone?: string;
   role?: string;
   errorResponse?: NextResponse;
-} {
-  const authHeader = req.headers.get("authorization") || req.headers.get("x-auth-token") || "";
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-
-  // If no token, allow if query param ?mode=public or internal request header exists
-  if (!token) {
-    const isPublic = req.nextUrl.searchParams.get("mode") === "public";
-    if (isPublic) {
-      return { authorized: true, role: "farmer" };
-    }
-    return {
-      authorized: false,
-      errorResponse: NextResponse.json(
-        {
-          success: false,
-          error: "unauthorized",
-          messageHi: "कृपया पहले किसान खाते से लॉगिन करें।",
-          messageEn: "Authentication token missing.",
-        },
-        { status: 401 }
-      ),
-    };
+}> {
+  const auth = await getAuthenticatedProfile();
+  if (!auth) {
+    return { authorized: false, errorResponse: NextResponse.json({ success: false, error: "unauthorized", messageHi: "कृपया पहले किसान खाते से लॉगिन करें।" }, { status: 401 }) };
   }
-
-  // Token format: agri-token-${role}-${phone}-${timestamp}
-  const parts = token.split("-");
-  const role = parts[2]?.toLowerCase();
-  const phone = parts[3];
-
-  if (role !== "farmer" && role !== "admin") {
-    return {
-      authorized: false,
-      errorResponse: NextResponse.json(
-        {
-          success: false,
-          error: "forbidden",
-          messageHi: "पहुंच अस्वीकृत: यह सेवा केवल किसान खातों के लिए उपलब्ध है।",
-          messageEn: "Access forbidden: only farmers may access this endpoint.",
-        },
-        { status: 403 }
-      ),
-    };
+  if (auth.profile.role !== "farmer") {
+    return { authorized: false, errorResponse: NextResponse.json({ success: false, error: "forbidden", messageHi: "यह सेवा केवल किसान खातों के लिए है।" }, { status: 403 }) };
   }
-
-  return { authorized: true, role, phone };
+  if (!auth.profile.phone) {
+    return { authorized: false, errorResponse: NextResponse.json({ success: false, error: "profile_phone_required" }, { status: 403 }) };
+  }
+  return { authorized: true, role: "farmer", phone: auth.profile.phone };
 }
 
 export async function GET(req: NextRequest) {
-  const auth = verifyFarmerAuth(req);
+  const auth = await verifyFarmerAuth();
   if (!auth.authorized) {
     return auth.errorResponse!;
   }
 
   const allRepairs = getServerRepairs();
-  const phone = auth.phone || req.nextUrl.searchParams.get("phone");
+  const phone = auth.phone!;
 
   // If a specific farmer phone is present, filter for their repairs, or return all if matching
-  const filtered = phone
-    ? allRepairs.filter((r) => !r.farmerPhone || r.farmerPhone.replace(/\D/g, "").includes(phone.replace(/\D/g, "")))
-    : allRepairs;
+  const filtered = allRepairs.filter((r) => r.farmerPhone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
 
   return NextResponse.json({
     success: true,
@@ -95,7 +61,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = verifyFarmerAuth(req);
+  const auth = await verifyFarmerAuth();
   if (!auth.authorized) {
     return auth.errorResponse!;
   }
@@ -120,7 +86,7 @@ export async function POST(req: NextRequest) {
       id: uniqueId,
       farmerId: body.farmerId || "farmer-001",
       farmerName: body.farmerName || "रामलाल यादव",
-      farmerPhone: body.farmerPhone || auth.phone || "9876543210",
+      farmerPhone: auth.phone!,
       machineId: body.machineId || "tractor",
       machineNameHi: body.machineNameHi || "ट्रैक्टर",
       machineIcon: body.machineIcon || "🚜",
@@ -167,7 +133,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const auth = verifyFarmerAuth(req);
+  const auth = await verifyFarmerAuth();
   if (!auth.authorized) {
     return auth.errorResponse!;
   }
@@ -187,7 +153,13 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const updated = updateServerRepair(repairId, updates);
+    const ownedRepair = getServerRepairs().find((repair) => repair.id === repairId && repair.farmerPhone?.replace(/\D/g, "") === auth.phone?.replace(/\D/g, ""));
+    if (!ownedRepair) {
+      return NextResponse.json({ success: false, error: "not_found", messageHi: "मरम्मत अनुरोध नहीं मिला।" }, { status: 404 });
+    }
+
+    const { farmerId: _farmerId, farmerPhone: _farmerPhone, ...safeUpdates } = updates;
+    const updated = updateServerRepair(repairId, safeUpdates);
     if (!updated) {
       return NextResponse.json(
         {

@@ -157,11 +157,8 @@ import {
 } from "@/services/jobReadinessService";
 import {
   AuthSession,
-  UserRole,
-  getStoredSession,
   clearStoredSession,
   isTechnicianRole,
-  isFarmerRole,
   fetchCurrentAuthProfile,
 } from "@/services/authService";
 
@@ -288,53 +285,28 @@ export default function AgriPulseApp() {
   const [voiceAssistantStatus, setVoiceAssistantStatus] = useState<VoiceAssistantStatus>("idle");
 
   // Authenticated user session (Farmer vs Technician)
-  const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
-    if (typeof window !== "undefined") {
-      return getStoredSession();
-    }
-    return null;
-  });
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
 
-  const handleLogout = () => {
-    clearStoredSession();
+  const handleLogout = async () => {
+    await clearStoredSession();
     setAuthSession(null);
     setShowWelcomeScreen(true);
     setCurrentScreen("home");
   };
 
-  // P2-AUTH: Active session validation against backend (/api/auth/me) on mount & refresh
+  // Restore the genuine Supabase session from the HttpOnly cookie on mount.
   useEffect(() => {
-    if (authSession?.token) {
-      fetchCurrentAuthProfile(authSession.token)
-        .then((res) => {
-          if (res.success && res.user) {
-            setAuthSession((prev) => {
-              if (!prev) return null;
-              const backendRole: UserRole = isTechnicianRole(res.role || res.user?.role || prev.user.role)
-                ? "technician"
-                : "farmer";
-              const updatedSession: AuthSession = {
-                ...prev,
-                user: {
-                  ...prev.user,
-                  ...res.user,
-                  role: backendRole,
-                },
-              };
-              try {
-                localStorage.setItem("agripulse_auth_session_v1", JSON.stringify(updatedSession));
-              } catch {}
-              return updatedSession;
-            });
-          } else if (res.error === "http_401") {
-            clearStoredSession();
-            setAuthSession(null);
-          }
-        })
-        .catch(() => {
-          // Offline-first: maintain stored session when network is unreachable
-        });
-    }
+    let active = true;
+    fetchCurrentAuthProfile().then((res) => {
+      if (!active || !res.success || !res.user) return;
+      const role = isTechnicianRole(res.role || res.user.role) ? "technician" : "farmer";
+      setAuthSession({
+        user: { ...res.user, role },
+        createdAt: new Date().toISOString(),
+        expiresAt: "",
+      });
+    });
+    return () => { active = false; };
   }, []);
 
   // Multilingual System State (Section 1 & 2)

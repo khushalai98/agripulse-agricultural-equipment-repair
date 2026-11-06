@@ -753,24 +753,10 @@ export function createRepairRequest(params: {
 
       // 3. Connect to backend API: Asynchronously sync with /api/farmer/repairs
       if (typeof window !== "undefined" && typeof fetch === "function") {
-        let token = "";
-        try {
-          const rawSession = localStorage.getItem("agripulse_auth_session_v1");
-          if (rawSession) {
-            const sess = JSON.parse(rawSession);
-            token = sess?.token || "";
-          }
-        } catch {
-          // safe fallback
-        }
-        if (!token) {
-          token = `agri-token-farmer-${params.farmerPhone || "9876543210"}-${Date.now()}`;
-        }
         fetch("/api/farmer/repairs", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(newRepair),
         }).catch(() => {
@@ -1101,6 +1087,3 @@ export function ensureSimulatedDemoRequest(): RepairRequest {
   }
   return DEMO_WATERPUMP_REPAIR;
 }
-
-
-
